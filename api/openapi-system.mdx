@@ -1,0 +1,440 @@
+---
+title: OpenAPI System Internals
+description: Deep dive into how pb-ext's AST parsing extracts OpenAPI metadata from Go source code
+---
+
+## How AST Parsing Works
+
+The OpenAPI documentation system uses Go's AST (Abstract Syntax Tree) parser to analyze your source code at compile time. This extracts metadata about your handlers, request/response types, and parameters without requiring runtime reflection or manual annotations.
+
+### Pipeline Overview
+
+```
+Source files (// API_SOURCE)
+  ↓
+ASTParser.DiscoverSourceFiles()
+  ↓
+Phase 1: Parse API_SOURCE files
+  ↓ extractStructs()          — two-pass: register structs, then generate schemas
+  ↓ extractFuncReturnTypes()  — scan helper function return types
+  ↓ extractHelperFuncParams() — extract params from helper functions
+  ↓ extractHandlers()         — find func(c *core.RequestEvent) error
+  ↓
+Phase 2: Follow local imports (zero-config)
+  ↓ parseImportedPackages()   — auto-discover type definitions
+  ↓ parseDirectoryStructs()   — extract structs from imported packages
+  ↓
+APIRegistry.RegisterRoute()
+  ↓ enhanceEndpointWithAST()  — match handler → AST metadata
+  ↓
+Generate OpenAPI 3.0.3 spec
+```
+
+<Note>
+The parser operates in **two phases**: first parsing files marked with `// API_SOURCE`, then following local imports to resolve type definitions. This is fully automatic — no configuration needed.
+</Note>
+
+## What's Auto-Detected
+
+### Request Body Detection
+
+The parser detects request body types from these patterns:
+
+<CodeGroup>
+```go BindBody (PocketBase pattern)
+func createTodoHandler(c *core.RequestEvent) error {
+    var req TodoRequest
+    if err := c.BindBody(&req); err != nil {
+        return err
+    }
+    // Request schema: TodoRequest
+}
+```
+
+```go json.NewDecoder
+func createTodoHandler(c *core.RequestEvent) error {
+    var req TodoRequest
+    if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+        return err
+    }
+    // Request schema: TodoRequest
+}
+```
+</CodeGroup>
+
+**How it works**: The parser tracks variable declarations and finds `BindBody(&varName)` or `Decode(&varName)` calls. It resolves `varName` to its declared type and generates the JSON schema from the struct definition.
+
+### Response Schema Detection
+
+Response schemas are extracted from `c.JSON(status, data)` calls by analyzing the second argument:
+
+<CodeGroup>
+```go Map Literal (Inline Schema)
+func getTodosHandler(c *core.RequestEvent) error {
+    return c.JSON(http.StatusOK, map[string]any{
+        "todos": []map[string]any{},
+        "count": 0,
+    })
+}
+// Generated schema:
+// {
+//   "type": "object",
+//   "properties": {
+//     "todos": {"type": "array", "items": {"type": "object"}},
+//     "count": {"type": "integer"}
+//   }
+// }
+```
+
+```go Struct Reference
+func getTodoHandler(c *core.RequestEvent) error {
+    todo := Todo{ID: "1", Title: "Example"}
+    return c.JSON(http.StatusOK, todo)
+}
+// Generated schema: {"$ref": "#/components/schemas/Todo"}
+```
+
+```go Helper Function Call
+func formatCandlesFull(records []*core.Record) []map[string]any {
+    result := make([]map[string]any, len(records))
+    for i, r := range records {
+        result[i] = map[string]any{
+            "time":   r.GetInt("time"),
+            "open":   r.GetFloat("open"),
+            "high":   r.GetFloat("high"),
+            "low":    r.GetFloat("low"),
+            "close":  r.GetFloat("close"),
+            "volume": r.GetInt("volume"),
+        }
+    }
+    return result
+}
+
+func getCandlesHandler(c *core.RequestEvent) error {
+    records := fetchRecords()
+    candles := formatCandlesFull(records)
+    return c.JSON(http.StatusOK, candles)
+}
+// The parser analyzes formatCandlesFull's body and extracts the map schema
+```
+</CodeGroup>
+
+**Deep Schema Resolution**: When a handler returns the result of a helper function, the parser analyzes the helper's body to extract the exact schema. This works for `map[string]any` and `[]map[string]any` return types.
+
+### Query Parameters
+
+**Direct detection** from these patterns:
+
+```go
+// Pattern 1: Query variable + Get
+q := c.Request.URL.Query()
+value := q.Get("param_name")
+
+// Pattern 2: Direct chain
+value := c.Request.URL.Query().Get("param_name")
+
+// Pattern 3: Index access
+value := c.Request.URL.Query()["param_name"]
+
+// Pattern 4: RequestInfo helper
+info := c.RequestInfo()
+value := info.Query["param_name"]
+```
+
+**Indirect detection** via helper functions:
+
+<CodeGroup>
+```go Domain Helper (Specific Params)
+func parseTimeParams(e *core.RequestEvent) timeParams {
+    q := e.Request.URL.Query()
+    return timeParams{
+        Interval: q.Get("interval"),
+        From:     q.Get("from"),
+        To:       q.Get("to"),
+    }
+}
+
+func getDataHandler(e *core.RequestEvent) error {
+    params := parseTimeParams(e)
+    // Params detected: interval, from, to (all query)
+}
+```
+
+```go Generic Helper (Dynamic Param Name)
+func parseIntParam(e *core.RequestEvent, name string, def int) int {
+    val := e.Request.URL.Query().Get(name)
+    if val == "" {
+        return def
+    }
+    i, _ := strconv.Atoi(val)
+    return i
+}
+
+func listItemsHandler(e *core.RequestEvent) error {
+    page := parseIntParam(e, "page", 1)
+    limit := parseIntParam(e, "limit", 10)
+    // Params detected: page, limit (both query, extracted from call site)
+}
+```
+</CodeGroup>
+
+<Warning>
+Generic helpers must accept `*core.RequestEvent` as the first parameter and the param name as a **string literal** in the second parameter. The parser extracts the name from the call site.
+</Warning>
+
+### Header Parameters
+
+Same patterns as query parameters, but for headers:
+
+```go
+// Direct
+auth := c.Request.Header.Get("Authorization")
+
+// Via RequestInfo
+info := c.RequestInfo()
+auth := info.Headers["Authorization"]
+
+// Via helper
+func getAuthToken(e *core.RequestEvent) string {
+    return e.Request.Header.Get("Authorization")
+}
+```
+
+### Path Parameters
+
+Detected from `PathValue()` calls:
+
+```go
+func getTodoHandler(c *core.RequestEvent) error {
+    todoID := c.Request.PathValue("id")
+    // Path param detected: id (required=true)
+}
+```
+
+Path parameters are always marked as **required** in the OpenAPI spec.
+
+### Authentication Requirements
+
+Detected from PocketBase auth patterns:
+
+```go
+// Check if user is authenticated
+if c.Auth == nil {
+    return c.JSON(http.StatusUnauthorized, ...)
+}
+// Auth detected: user_auth
+
+// Check collection name
+if c.Auth.Collection().Name == "users" {
+    // Auth type: record_auth
+}
+
+// Via middleware binding
+router.POST("/todos", createTodoHandler).Bind(apis.RequireAuth())
+// Auth detected: user_auth (from middleware analysis)
+```
+
+## Source File Directives
+
+Three directives control how the parser processes your files:
+
+### `// API_SOURCE` — File Marker
+
+Place at the **top of your Go file** (before package declaration or imports) to mark it for AST parsing:
+
+```go
+// API_SOURCE
+package main
+
+import "github.com/pocketbase/pocketbase/core"
+
+func myHandler(c *core.RequestEvent) error {
+    // This handler will be analyzed
+}
+```
+
+<Note>
+Only files with `// API_SOURCE` are parsed for handlers. Type definitions (structs) in imported packages are automatically discovered — no directive needed.
+</Note>
+
+### `// API_DESC` — Handler Description
+
+Place in the function's doc comment (the comment block directly above the function):
+
+```go
+// API_DESC Get all todos with optional filtering by completion status and priority
+func getTodosHandler(c *core.RequestEvent) error {
+    // ...
+}
+```
+
+This becomes the `description` field in the OpenAPI operation.
+
+### `// API_TAGS` — OpenAPI Tags
+
+Comma-separated list of tags for grouping endpoints:
+
+```go
+// API_DESC Create a new todo item
+// API_TAGS Todos, Management
+func createTodoHandler(c *core.RequestEvent) error {
+    // ...
+}
+```
+
+Tags appear in Swagger UI as navigation groups.
+
+## Debug Endpoint Usage
+
+The debug endpoint provides full visibility into the AST parsing pipeline:
+
+```bash
+curl -H "Authorization: Bearer YOUR_SUPERUSER_TOKEN" \
+     http://localhost:8090/api/docs/debug/ast
+```
+
+<Accordion title="Example Debug Output">
+```json
+{
+  "structs": {
+    "TodoRequest": {
+      "name": "TodoRequest",
+      "fields": [
+        {
+          "name": "Title",
+          "type": "string",
+          "jsonTag": "title",
+          "required": true
+        },
+        {
+          "name": "Completed",
+          "type": "bool",
+          "jsonTag": "completed"
+        }
+      ],
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string"},
+          "completed": {"type": "boolean"}
+        },
+        "required": ["title"]
+      }
+    }
+  },
+  "handlers": {
+    "getTodosHandler": {
+      "name": "getTodosHandler",
+      "description": "Get all todos with optional filtering",
+      "tags": ["Todos"],
+      "requestSchema": null,
+      "responseSchema": {
+        "type": "object",
+        "properties": {
+          "todos": {"type": "array", "items": {"type": "object"}},
+          "count": {"type": "integer"}
+        }
+      },
+      "parameters": [
+        {"name": "completed", "source": "query", "type": "string"},
+        {"name": "priority", "source": "query", "type": "string"}
+      ],
+      "requiresAuth": false
+    },
+    "createTodoHandler": {
+      "name": "createTodoHandler",
+      "description": "Create a new todo item",
+      "tags": ["Todos"],
+      "requestSchema": {"$ref": "#/components/schemas/TodoRequest"},
+      "responseSchema": {
+        "type": "object",
+        "properties": {
+          "message": {"type": "string"},
+          "todo": {"type": "object"}
+        }
+      },
+      "parameters": [],
+      "requiresAuth": true,
+      "authType": "user_auth"
+    }
+  },
+  "versions": {
+    "v1": {
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/api/v1/todos",
+          "handler": "getTodosHandler",
+          "description": "Get all todos with optional filtering",
+          "tags": ["Todos"]
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/todos",
+          "handler": "createTodoHandler",
+          "description": "Create a new todo item",
+          "tags": ["Todos"],
+          "auth": {"required": true, "type": "user_auth"}
+        }
+      ],
+      "componentSchemas": {...},
+      "openapi": {...}
+    }
+  }
+}
+```
+</Accordion>
+
+## When Annotations Are Needed
+
+The system auto-detects most patterns, but you should add annotations when:
+
+| Scenario | Solution |
+|----------|----------|
+| Handler description not clear from code | Add `// API_DESC` |
+| Want to group endpoints by feature | Add `// API_TAGS` |
+| Using complex helper chains | Ensure helpers accept `*core.RequestEvent` first param |
+| Dynamic parameter names | Use generic helpers with string literal second param |
+
+<Warning>
+If a parameter or schema is missing from the generated spec, check the debug endpoint to see what the parser detected. Common issues:
+
+- Helper function doesn't accept `*core.RequestEvent` as first param
+- Generic helper param name is not a string literal
+- File missing `// API_SOURCE` directive
+</Warning>
+
+## Best Practices
+
+<Steps>
+  <Step title="Mark handler files with // API_SOURCE">
+    Place the directive at the top of files containing handler functions.
+  </Step>
+  
+  <Step title="Use explicit request/response types">
+    Define structs for complex request/response bodies instead of inline maps.
+  </Step>
+  
+  <Step title="Extract parameter parsing into helpers">
+    Domain helpers make code cleaner and params are still auto-detected.
+  </Step>
+  
+  <Step title="Add descriptions and tags">
+    Use `// API_DESC` and `// API_TAGS` for better Swagger UI navigation.
+  </Step>
+  
+  <Step title="Test with the debug endpoint">
+    Verify that all parameters and schemas are detected correctly.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Versioned Routing" icon="code-branch" href="/api/versioned-routing">
+    Manage multiple API versions with isolated registries
+  </Card>
+  <Card title="Route Registration" icon="route" href="/api/route-registration">
+    Learn the two registration patterns: manual and CRUD
+  </Card>
+</CardGroup>

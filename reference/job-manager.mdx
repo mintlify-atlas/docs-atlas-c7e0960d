@@ -1,0 +1,513 @@
+---
+title: JobManager
+description: Orchestrates cron job registration, execution, and metadata tracking
+---
+
+## Overview
+
+The `JobManager` orchestrates cron job registration and execution with automatic logging to PocketBase. It provides structured execution logging, manual job triggers, and comprehensive job analytics.
+
+## Type Definition
+
+```go
+type Manager struct {
+    app      core.App
+    logger   *Logger
+    registry map[string]*JobMetadata
+    mu       sync.RWMutex
+}
+```
+
+<Note>
+The JobManager wraps PocketBase's built-in cron system with automatic execution logging and metadata tracking. All logs are stored in the `_job_logs` collection.
+</Note>
+
+## Initialization
+
+### Initialize
+
+```go
+func Initialize(app core.App) (*Manager, error)
+```
+
+Creates and initializes the job manager, setting it as the global singleton.
+
+<ParamField path="app" type="core.App" required>
+  PocketBase application instance
+</ParamField>
+
+**Returns:**
+- `*Manager` - Initialized manager instance
+- `error` - Error if logger initialization fails
+
+**Location:** `core/jobs/manager.go:32`
+
+**Process:**
+1. Initializes the job logger
+2. Creates the `_job_logs` collection
+3. Sets up background flush workers
+4. Marks orphaned jobs (from crashes) as timeout
+5. Sets the global singleton
+
+**Example:**
+```go
+manager, err := jobs.Initialize(app)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### GetManager
+
+```go
+func GetManager() *Manager
+```
+
+Returns the global JobManager singleton.
+
+**Location:** `core/jobs/manager.go:456`
+
+**Example:**
+```go
+manager := jobs.GetManager()
+```
+
+## Job Registration
+
+### RegisterJob
+
+```go
+func (m *Manager) RegisterJob(
+    jobID, jobName, description, expression string,
+    fn func(*ExecutionLogger),
+) error
+```
+
+Registers a new cron job with automatic logging.
+
+<ParamField path="jobID" type="string" required>
+  Unique job identifier
+</ParamField>
+
+<ParamField path="jobName" type="string">
+  Human-readable job name (uses jobID if empty)
+</ParamField>
+
+<ParamField path="description" type="string">
+  Job description for documentation
+</ParamField>
+
+<ParamField path="expression" type="string" required>
+  Cron expression (e.g., `"0 0 * * *"` for daily at midnight)
+</ParamField>
+
+<ParamField path="fn" type="func(*ExecutionLogger)" required>
+  Job execution function with structured logging
+</ParamField>
+
+**Returns:**
+- `error` - Error if registration or cron scheduling fails
+
+**Location:** `core/jobs/manager.go:46`
+
+**Example:**
+```go
+err := manager.RegisterJob(
+    "daily_cleanup",
+    "Daily Cleanup",
+    "Removes old records and optimizes database",
+    "0 2 * * *",  // Daily at 2 AM
+    func(log *jobs.ExecutionLogger) {
+        log.Start("Daily Cleanup")
+        
+        log.Info("Cleaning up old records...")
+        // cleanup logic
+        
+        log.Statistics(map[string]interface{}{
+            "records_deleted": 42,
+            "space_freed": "2.3MB",
+        })
+        
+        log.Complete("Cleanup finished successfully")
+    },
+)
+```
+
+### RegisterInternalSystemJobs
+
+```go
+func (m *Manager) RegisterInternalSystemJobs() error
+```
+
+Registers built-in pb-ext maintenance jobs:
+
+- `__pbExtLogClean__` - Cleans job logs older than 72 hours (daily at midnight)
+- `__pbExtAnalyticsClean__` - Deletes analytics older than 90 days (daily at 3 AM)
+
+**Location:** `core/jobs/manager.go:286`
+
+## Job Execution
+
+### ExecuteJobManually
+
+```go
+func (m *Manager) ExecuteJobManually(
+    jobID, triggerBy string,
+) (*ExecutionResult, error)
+```
+
+Runs a registered job immediately, outside its schedule.
+
+<ParamField path="jobID" type="string" required>
+  Job identifier
+</ParamField>
+
+<ParamField path="triggerBy" type="string">
+  User or system that triggered execution (for audit trail)
+</ParamField>
+
+**Returns:**
+```go
+type ExecutionResult struct {
+    JobID       string        `json:"job_id"`
+    Success     bool          `json:"success"`
+    Duration    time.Duration `json:"duration"`
+    Output      string        `json:"output"`
+    Error       string        `json:"error"`
+    TriggerType string        `json:"trigger_type"`  // "manual" or "scheduled"
+    TriggerBy   string        `json:"trigger_by"`
+    ExecutedAt  time.Time     `json:"executed_at"`
+}
+```
+
+**Location:** `core/jobs/manager.go:86`
+
+**Example:**
+```go
+result, err := manager.ExecuteJobManually("daily_cleanup", "admin@example.com")
+if err != nil {
+    log.Printf("Job failed: %v", err)
+} else {
+    log.Printf("Job completed in %v", result.Duration)
+}
+```
+
+## Job Information
+
+### GetJobs
+
+```go
+func (m *Manager) GetJobs(opts ListOptions) []JobMetadata
+```
+
+Returns a filtered list of registered jobs.
+
+<ParamField path="opts" type="ListOptions" required>
+  Filter options for job listing
+</ParamField>
+
+```go
+type ListOptions struct {
+    IncludeSystemJobs bool  // Include PocketBase system jobs
+    ActiveOnly        bool  // Only return active jobs
+}
+
+type JobMetadata struct {
+    ID          string    `json:"id"`
+    Name        string    `json:"name"`
+    Description string    `json:"description"`
+    Expression  string    `json:"expression"`
+    IsSystemJob bool      `json:"is_system_job"`
+    CreatedAt   time.Time `json:"created_at"`
+    IsActive    bool      `json:"is_active"`
+}
+```
+
+**Location:** `core/jobs/manager.go:174`
+
+**Example:**
+```go
+// Get all user jobs (exclude system)
+jobs := manager.GetJobs(jobs.ListOptions{
+    IncludeSystemJobs: false,
+    ActiveOnly:        true,
+})
+
+// Get all jobs including system
+allJobs := manager.GetJobs(jobs.ListOptions{
+    IncludeSystemJobs: true,
+    ActiveOnly:        false,
+})
+```
+
+### GetJobMetadata
+
+```go
+func (m *Manager) GetJobMetadata(jobID string) (*JobMetadata, error)
+```
+
+Returns metadata for a specific job by ID.
+
+**Location:** `core/jobs/manager.go:210`
+
+### GetSystemStatus
+
+```go
+func (m *Manager) GetSystemStatus() map[string]interface{}
+```
+
+Returns status summary of the cron scheduler.
+
+**Returns:**
+```json
+{
+    "total_jobs": 10,
+    "system_jobs": 5,
+    "user_jobs": 5,
+    "active_jobs": 10,
+    "status": "running",
+    "has_started": true,
+    "last_updated": "2024-03-04T12:00:00Z"
+}
+```
+
+**Location:** `core/jobs/manager.go:245`
+
+## Job Management
+
+### RemoveJob
+
+```go
+func (m *Manager) RemoveJob(jobID string) error
+```
+
+Removes a job from the cron scheduler and registry.
+
+**Location:** `core/jobs/manager.go:235`
+
+**Example:**
+```go
+err := manager.RemoveJob("old_job")
+```
+
+### UpdateTimezone
+
+```go
+func (m *Manager) UpdateTimezone(tz string) error
+```
+
+Updates the cron scheduler timezone.
+
+<ParamField path="tz" type="string" required>
+  IANA timezone name (e.g., "America/New_York")
+</ParamField>
+
+**Location:** `core/jobs/manager.go:275`
+
+**Example:**
+```go
+err := manager.UpdateTimezone("America/Los_Angeles")
+```
+
+### Logger
+
+```go
+func (m *Manager) Logger() *Logger
+```
+
+Returns the underlying job Logger (needed for HTTP handlers).
+
+**Location:** `core/jobs/manager.go:394`
+
+## Complete Examples
+
+### Basic Job Registration
+
+```go
+func setupJobs(app core.App) error {
+    manager, err := jobs.Initialize(app)
+    if err != nil {
+        return err
+    }
+    
+    // Register system jobs
+    if err := manager.RegisterInternalSystemJobs(); err != nil {
+        return err
+    }
+    
+    // Register custom job
+    err = manager.RegisterJob(
+        "hourly_stats",
+        "Hourly Statistics",
+        "Computes hourly user statistics",
+        "0 * * * *",  // Every hour
+        computeHourlyStats,
+    )
+    if err != nil {
+        return err
+    }
+    
+    return nil
+}
+
+func computeHourlyStats(log *jobs.ExecutionLogger) {
+    log.Start("Hourly Statistics")
+    
+    // Do work
+    activeUsers := 142
+    newSignups := 7
+    
+    log.Statistics(map[string]interface{}{
+        "active_users": activeUsers,
+        "new_signups": newSignups,
+    })
+    
+    log.Complete("Statistics computed successfully")
+}
+```
+
+### Job with Error Handling
+
+```go
+func backupDatabase(log *jobs.ExecutionLogger) {
+    log.Start("Database Backup")
+    
+    log.Info("Creating backup...")
+    
+    if err := performBackup(); err != nil {
+        log.Error("Backup failed: %v", err)
+        log.Fail(err)
+        return
+    }
+    
+    log.Success("Backup created successfully")
+    log.Complete("Backup job finished")
+}
+
+err := manager.RegisterJob(
+    "db_backup",
+    "Database Backup",
+    "Creates daily database backup",
+    "0 3 * * *",
+    backupDatabase,
+)
+```
+
+### Progress Tracking
+
+```go
+func processLargeDataset(log *jobs.ExecutionLogger) {
+    log.Start("Data Processing")
+    
+    items := fetchItems()
+    total := len(items)
+    
+    for i, item := range items {
+        log.Progress("Processing item %d/%d", i+1, total)
+        processItem(item)
+    }
+    
+    log.Statistics(map[string]interface{}{
+        "items_processed": total,
+        "success_rate": "100%",
+    })
+    
+    log.Complete("All items processed")
+}
+```
+
+### Manual Execution via API
+
+```go
+func handleManualJobExecution(e *core.RequestEvent) error {
+    jobID := e.Request.PathValue("id")
+    userEmail := e.Auth.Email()
+    
+    manager := jobs.GetManager()
+    result, err := manager.ExecuteJobManually(jobID, userEmail)
+    
+    if err != nil {
+        return e.JSON(500, map[string]string{
+            "error": err.Error(),
+        })
+    }
+    
+    return e.JSON(200, result)
+}
+```
+
+### Conditional Job Registration
+
+```go
+func setupConditionalJobs(app core.App, config Config) error {
+    manager, err := jobs.Initialize(app)
+    if err != nil {
+        return err
+    }
+    
+    // Always register system jobs
+    if err := manager.RegisterInternalSystemJobs(); err != nil {
+        return err
+    }
+    
+    // Register email job only if SMTP configured
+    if config.SMTPEnabled {
+        err = manager.RegisterJob(
+            "daily_digest",
+            "Daily Email Digest",
+            "Sends daily digest emails to users",
+            "0 8 * * *",
+            sendDailyDigest,
+        )
+        if err != nil {
+            return err
+        }
+    }
+    
+    // Register backup job only in production
+    if config.Environment == "production" {
+        err = manager.RegisterJob(
+            "db_backup",
+            "Database Backup",
+            "Creates database backups",
+            "0 2 * * *",
+            backupDatabase,
+        )
+        if err != nil {
+            return err
+        }
+    }
+    
+    return nil
+}
+```
+
+## System Jobs
+
+These job IDs are treated as system jobs:
+
+- `__pbLogsCleanup__` - PocketBase log cleanup
+- `__pbOTPCleanup__` - PocketBase OTP cleanup
+- `__pbMFACleanup__` - PocketBase MFA cleanup
+- `__pbDBOptimize__` - PocketBase database optimization
+- `__pbRateLimitersCleanup__` - PocketBase rate limiter cleanup
+- `__pbExtLogClean__` - pb-ext job log cleanup
+- `__pbExtAnalyticsClean__` - pb-ext analytics cleanup
+
+**Location:** `core/jobs/types.go:22`
+
+## Best Practices
+
+1. **Job IDs**: Use descriptive, unique IDs (e.g., `"daily_cleanup"`, not `"job1"`)
+2. **Structured Logging**: Always use `ExecutionLogger` methods, not direct `fmt.Println`
+3. **Error Handling**: Always call `log.Fail(err)` on errors
+4. **Statistics**: Use `log.Statistics()` for metrics (processed count, duration, etc.)
+5. **Progress Updates**: Call `log.Progress()` for long-running jobs
+6. **Timezone Awareness**: Set timezone early in app lifecycle
+7. **Manual Triggers**: Require authentication for manual execution endpoints
+
+## Related
+
+- [ExecutionLogger](/reference/execution-logger) - Structured job logging
+- [Job HTTP Handlers](/reference/job-manager) - REST API for job management
+- [Cron Expression Guide](/features/cron-jobs) - Scheduling syntax

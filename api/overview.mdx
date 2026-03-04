@@ -1,0 +1,208 @@
+---
+title: API Documentation Overview
+description: Understand pb-ext's automatic OpenAPI documentation system powered by Go AST parsing
+---
+
+## What is the API Documentation System?
+
+The API documentation system in pb-ext automatically generates OpenAPI 3.0.3 specifications from your Go source code using Abstract Syntax Tree (AST) parsing. This means you write normal Go handlers, and the system extracts:
+
+- Request and response schemas
+- Query, header, and path parameters
+- Authentication requirements
+- Endpoint descriptions and tags
+
+All of this happens at **startup** by analyzing your handler functions, struct definitions, and PocketBase patterns.
+
+<Note>
+The system operates in two modes: **development** (runtime AST parsing) and **production** (pre-generated specs loaded from disk).
+</Note>
+
+## Key Capabilities
+
+### Auto-Detection Without Annotations
+
+The AST parser automatically detects:
+
+| What | How it's detected |
+|------|-------------------|
+| **Request body** | `c.BindBody(&req)` or `json.NewDecoder(c.Request.Body).Decode(&req)` |
+| **Response schema** | `c.JSON(status, data)` — analyzes the second argument |
+| **Query parameters** | `c.Request.URL.Query().Get("name")` |
+| **Header parameters** | `c.Request.Header.Get("name")` |
+| **Path parameters** | `c.Request.PathValue("id")` |
+| **Authentication** | PocketBase auth middleware patterns (`apis.RequireAuth()`) |
+
+### Indirect Parameter Detection
+
+If your handler calls a helper function like `parseTimeParams(e *core.RequestEvent)`, the system follows that call and extracts the parameters the helper reads. This works for both:
+
+- **Domain helpers** — read specific params by name
+- **Generic helpers** — read params via function arguments (e.g., `parseIntParam(e, "page", 0)`)
+
+<Accordion title="Example: Indirect Parameter Detection">
+```go
+// Helper function reads params
+func parseTimeParams(e *core.RequestEvent) timeParams {
+    q := e.Request.URL.Query()
+    return timeParams{
+        Interval: q.Get("interval"),
+        From:     q.Get("from"),
+        To:       q.Get("to"),
+    }
+}
+
+// Handler calls helper — params automatically detected
+func getDataHandler(e *core.RequestEvent) error {
+    params := parseTimeParams(e)
+    // ...
+}
+```
+The OpenAPI spec will include `interval`, `from`, and `to` as query parameters for `getDataHandler`.
+</Accordion>
+
+## Development vs Production Modes
+
+### Development Mode (Runtime AST)
+
+- Source files marked with `// API_SOURCE` are parsed on server startup
+- AST analysis runs every time the server starts
+- Full pipeline: struct extraction → helper analysis → handler parsing → OpenAPI generation
+- Best for rapid iteration and debugging
+
+### Production Mode (Embedded Specs)
+
+- OpenAPI specs are generated during `pb-cli --production` build
+- Specs are saved to `dist/specs/` as JSON files
+- Server reads specs from disk on startup (no AST parsing)
+- Faster startup, deterministic output
+
+<Note>
+Production builds use `PB_EXT_OPENAPI_SPECS_DIR` to locate the specs directory. If not set, the server looks for `specs/` relative to the binary.
+</Note>
+
+## Accessing Documentation
+
+### Swagger UI (Interactive)
+
+Each API version with `PublicSwagger: true` gets a Swagger UI interface:
+
+```
+GET /api/docs/v1/swagger
+GET /api/docs/v2/swagger
+```
+
+The Swagger UI includes dark mode CSS (SwaggerDark by Amoenus, MIT licensed) for a better viewing experience.
+
+### OpenAPI Spec (JSON)
+
+Public access to the OpenAPI spec (no auth required when `PublicSwagger: true`):
+
+```
+GET /api/docs/v1/spec
+GET /api/docs/v2/spec
+```
+
+Authenticated access (superuser auth required):
+
+```
+GET /api/docs/v1
+GET /api/docs/v2
+```
+
+### Debug Endpoint (Full Pipeline Introspection)
+
+For debugging the AST parsing pipeline:
+
+```
+GET /api/docs/debug/ast
+```
+
+<Warning>
+Requires superuser authentication. Returns the complete internal state: all parsed structs, handlers, parameters, schemas, and the final OpenAPI output for each version.
+</Warning>
+
+#### What the Debug Endpoint Shows
+
+- **Structs**: All parsed struct definitions with their JSON schemas
+- **Handlers**: All detected handlers with request/response types and parameters
+- **Endpoints**: Per-version endpoint list with metadata
+- **Component Schemas**: All OpenAPI component schemas
+- **OpenAPI Output**: Complete OpenAPI 3.0.3 spec for each version
+
+<Accordion title="Example Debug Response Structure">
+```json
+{
+  "structs": {
+    "TodoRequest": {
+      "name": "TodoRequest",
+      "fields": [...],
+      "jsonSchema": {...}
+    }
+  },
+  "handlers": {
+    "getTodosHandler": {
+      "name": "getTodosHandler",
+      "description": "Get all todos with optional filtering",
+      "tags": ["Todos"],
+      "requestSchema": null,
+      "responseSchema": {...},
+      "parameters": [{"name": "completed", "source": "query"}, ...]
+    }
+  },
+  "versions": {
+    "v1": {
+      "endpoints": [...],
+      "componentSchemas": {...},
+      "openapi": {...}
+    }
+  }
+}
+```
+</Accordion>
+
+## Source File Directives
+
+Three directives control AST parsing:
+
+| Directive | Location | Purpose |
+|-----------|----------|----------|
+| `// API_SOURCE` | Top of `.go` file | Marks file for AST parsing |
+| `// API_DESC <text>` | Before handler function | Sets OpenAPI description |
+| `// API_TAGS <csv>` | Before handler function | Comma-separated tags |
+
+<CodeGroup>
+```go Example Handler with Directives
+// API_SOURCE
+package main
+
+import (
+    "net/http"
+    "github.com/pocketbase/pocketbase/core"
+)
+
+// API_DESC Get all todos with optional filtering
+// API_TAGS Todos
+func getTodosHandler(c *core.RequestEvent) error {
+    // Handler implementation
+    return c.JSON(http.StatusOK, map[string]any{"todos": []})
+}
+```
+</CodeGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="OpenAPI System Deep Dive" icon="microscope" href="/api/openapi-system">
+    Learn how AST parsing detects schemas and parameters
+  </Card>
+  <Card title="Versioned Routing" icon="code-branch" href="/api/versioned-routing">
+    Manage multiple API versions with isolated registries
+  </Card>
+  <Card title="Route Registration" icon="route" href="/api/route-registration">
+    Register routes manually or use CRUD helpers
+  </Card>
+  <Card title="Annotations Reference" icon="tag" href="/api/annotations">
+    Complete guide to source file directives
+  </Card>
+</CardGroup>

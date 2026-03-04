@@ -1,0 +1,278 @@
+---
+title: Architecture
+description: Understanding pb-ext's architecture, package organization, and design patterns
+icon: "sitemap"
+---
+
+## Overview
+
+pb-ext is a Go library that wraps PocketBase with production-ready features. It follows a clean architectural pattern where the library code lives in `core/` and example applications live in `cmd/`.
+
+## Directory Structure
+
+The framework follows a modular, feature-based architecture:
+
+```
+core/
+├── core.go              # Public facade (re-exports)
+├── server/              # Core server implementation
+│   ├── server.go        # Server struct and lifecycle
+│   ├── server_options.go # Functional options pattern
+│   ├── health.go        # Health check dashboard
+│   ├── api/             # OpenAPI documentation system
+│   └── templates/       # Embedded dashboard UI templates
+├── logging/             # Structured logging & middleware
+├── analytics/           # Privacy-focused visitor analytics
+├── jobs/                # Cron job management & logging
+├── monitoring/          # System metrics (CPU, memory, disk)
+└── testutil/            # Testing utilities
+
+cmd/
+├── server/              # Example application (user's entry point)
+│   ├── main.go          # Server initialization
+│   ├── collections.go   # Database schema
+│   ├── routes.go        # API routes
+│   ├── handlers.go      # Request handlers
+│   └── jobs.go          # Cron jobs
+└── pb-cli/              # Build toolchain
+```
+
+## Package Organization
+
+### The Facade Pattern
+
+The `core/core.go` file acts as a **public facade** that re-exports components from internal packages. This provides a clean, stable API for users:
+
+```go core/core.go
+// Re-export server components
+var New = server.New
+
+// Re-export server options
+var (
+    WithConfig      = server.WithConfig
+    WithPocketbase  = server.WithPocketbase
+    WithMode        = server.WithMode
+    InDeveloperMode = server.InDeveloperMode
+    InNormalMode    = server.InNormalMode
+)
+
+// Re-export server types
+type Server = server.Server
+type Option = server.Option
+
+// Re-export logging components
+var (
+    SetupLogging  = logging.SetupLogging
+    SetupRecovery = logging.SetupRecovery
+)
+
+// Re-export API spec generator components
+var (
+    NewSpecGeneratorWithInitializer = api.NewSpecGeneratorWithInitializer
+    ValidateSpecs                   = api.ValidateSpecs
+    ValidateSpecFile                = api.ValidateSpecFile
+)
+```
+
+<Info>
+Users import `github.com/magooney-loon/pb-ext/core` and get access to all necessary components through this single import.
+</Info>
+
+### Core Server Package
+
+The `core/server/` package contains the main `Server` struct that wraps PocketBase:
+
+```go core/server/server.go
+type Server struct {
+    app         *pocketbase.PocketBase
+    stats       *ServerStats
+    analytics   *analytics.Analytics
+    jobManager  *jobs.Manager
+    jobHandlers *jobs.Handlers
+    options     *options
+}
+
+type ServerStats struct {
+    StartTime          time.Time
+    TotalRequests      atomic.Uint64
+    ActiveConnections  atomic.Int32
+    LastRequestTime    atomic.Int64
+    TotalErrors        atomic.Uint64
+    AverageRequestTime atomic.Int64
+}
+```
+
+### OpenAPI Documentation System
+
+The `core/server/api/` package implements automatic API documentation generation using Go AST parsing:
+
+- **`ast.go`** - Entry points for AST parsing
+- **`ast_func.go`** - Handler and function analysis
+- **`ast_struct.go`** - Struct and schema extraction
+- **`ast_metadata.go`** - Type and value resolution
+- **`registry.go`** - Core registration logic
+- **`registry_routes.go`** - Route registration
+- **`registry_spec.go`** - OpenAPI spec generation
+- **`version_manager.go`** - Multi-version API support
+
+### Feature Packages
+
+Each feature package is self-contained:
+
+- **`core/logging/`** - Structured logging with trace IDs and request middleware
+- **`core/analytics/`** - Privacy-focused page view tracking with session management
+- **`core/jobs/`** - Cron job management with structured logging and auto-cleanup
+- **`core/monitoring/`** - Real-time system metrics (CPU, memory, disk, network)
+
+## How pb-ext Wraps PocketBase
+
+pb-ext enhances PocketBase without modifying its core. The `Server` struct contains a PocketBase instance and extends its lifecycle:
+
+```go
+func New(create_options ...Option) *Server {
+    var (
+        opts    *options = &options{}
+        pb_conf *pocketbase.Config
+        pb_app  *pocketbase.PocketBase
+    )
+
+    // Apply functional options
+    for _, opt := range create_options {
+        opt(opts)
+    }
+
+    // Create or use provided PocketBase config
+    if opts.config != nil {
+        pb_conf = opts.config
+    } else {
+        pb_conf = &pocketbase.Config{
+            DefaultDev: opts.developer_mode,
+        }
+    }
+
+    // Create or use provided PocketBase instance
+    if opts.pocketbase != nil {
+        pb_app = opts.pocketbase
+    } else {
+        pb_app = pocketbase.NewWithConfig(*pb_conf)
+    }
+
+    return &Server{
+        app:     pb_app,
+        options: opts,
+        stats: &ServerStats{
+            StartTime: time.Now(),
+        },
+    }
+}
+```
+
+<Tip>
+You can pass your own PocketBase instance using `WithPocketbase()` or customize the config with `WithConfig()`.
+</Tip>
+
+## Extension Points and Hooks
+
+pb-ext integrates into PocketBase's lifecycle using hooks:
+
+### OnBootstrap Hook
+
+Initializes infrastructure before the server starts:
+
+```go core/server/server.go
+app.OnBootstrap().BindFunc(func(e *core.BootstrapEvent) error {
+    // Initialize job management system
+    jobManager, err := jobs.Initialize(app)
+    if err != nil {
+        app.Logger().Error("Failed to initialize job management", "error", err)
+    } else {
+        s.jobManager = jobManager
+        jobManager.RegisterInternalSystemJobs()
+        s.jobHandlers = jobs.NewHandlers(jobManager)
+    }
+    return nil
+})
+```
+
+### OnServe Hook
+
+Registers routes and middleware when the server starts:
+
+```go core/server/server.go
+app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+    // Register request tracking middleware
+    e.Router.BindFunc(func(c *core.RequestEvent) error {
+        start := time.Now()
+        s.stats.TotalRequests.Add(1)
+        err := c.Next()
+        duration := time.Since(start)
+        // Update stats...
+        return err
+    })
+
+    // Register health dashboard
+    s.RegisterHealthRoute(e)
+
+    // Initialize analytics
+    analyticsInst, _ := analytics.Initialize(app)
+    analyticsInst.RegisterRoutes(e)
+
+    // Register job API routes
+    s.jobHandlers.RegisterRoutes(e)
+
+    return e.Next()
+})
+```
+
+### User Hooks
+
+Users extend the server in their application code:
+
+```go cmd/server/main.go
+srv.App().OnServe().BindFunc(func(e *core.ServeEvent) error {
+    app.SetupRecovery(srv.App(), e)
+    return e.Next()
+})
+```
+
+## Design Principles
+
+<CardGroup cols={2}>
+  <Card title="Separation of Concerns" icon="layer-group">
+    Library code (`core/`) is completely separate from example apps (`cmd/`)
+  </Card>
+  <Card title="Functional Options" icon="sliders">
+    Configuration uses the functional options pattern for flexibility
+  </Card>
+  <Card title="Hook-Based" icon="link">
+    Extensions use PocketBase's hook system rather than forking
+  </Card>
+  <Card title="Self-Contained" icon="box">
+    Each feature package manages its own collections, routes, and logic
+  </Card>
+</CardGroup>
+
+## Module Path
+
+The Go module path is:
+
+```
+github.com/magooney-loon/pb-ext
+```
+
+Import the framework with:
+
+```go
+import app "github.com/magooney-loon/pb-ext/core"
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Server Lifecycle" href="/core/server-lifecycle" icon="timeline">
+    Learn about bootstrap, serve, and shutdown phases
+  </Card>
+  <Card title="Configuration" href="/core/configuration" icon="gear">
+    Explore server options and configuration patterns
+  </Card>
+</CardGroup>

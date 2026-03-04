@@ -1,0 +1,552 @@
+---
+title: Logging
+description: Structured logging with request tracing, error handling, and PocketBase integration
+---
+
+pb-ext provides a comprehensive logging system built on PocketBase's logger with structured field support, request tracing, automatic error handling, and panic recovery.
+
+## Key Features
+
+- **Structured logging** — key-value pairs for easy log parsing
+- **Request tracing** — unique trace IDs for request correlation
+- **Automatic middleware** — logs all HTTP requests with timing
+- **Error handling** — centralized error responses with stack traces
+- **Panic recovery** — graceful handling of runtime panics
+- **PocketBase integration** — uses PocketBase's native logger
+- **Selective exclusion** — skip logging for static files and service workers
+
+## Setup
+
+From `core/logging/logging.go:118`:
+
+```go
+import (
+    "github.com/magooney-loon/pb-ext/core/logging"
+    "github.com/magooney-loon/pb-ext/core/server"
+)
+
+func main() {
+    srv := server.New()
+    
+    // Setup logging with request middleware
+    logging.SetupLogging(srv)
+    
+    // Setup panic recovery
+    srv.App().OnServe().BindFunc(func(e *core.ServeEvent) error {
+        logging.SetupRecovery(srv.App(), e)
+        return e.Next()
+    })
+    
+    srv.Start()
+}
+```
+
+## Request Middleware
+
+From `core/logging/logging.go:143`:
+
+```go
+// SetupLogging configures logging using PocketBase's logger
+func SetupLogging(srv *server.Server) {
+    app := srv.App()
+    requestStats := monitoring.NewRequestStats()
+
+    // Create a logger with common application fields
+    appLogger := app.Logger().With(
+        "pid", os.Getpid(),
+        "start_time", time.Now().Format(time.RFC3339),
+    )
+
+    app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+        logging.SetupErrorHandler(app, e)
+
+        e.Router.BindFunc(func(c *core.RequestEvent) error {
+            defer func() {
+                RecoverFromPanic(app, c)
+            }()
+
+            // Generate unique trace ID
+            traceID := security.RandomString(18)
+            c.Request.Header.Set(TraceIDHeader, traceID)
+            c.Response.Header().Set(TraceIDHeader, traceID)
+
+            start := time.Now()
+            err := c.Next()
+            duration := time.Since(start)
+
+            logCtx := LogContext{
+                TraceID:    traceID,
+                StartTime:  start,
+                Method:     c.Request.Method,
+                Path:       c.Request.URL.Path,
+                StatusCode: getStatusCode(c),
+                Duration:   duration,
+                UserAgent:  c.Request.UserAgent(),
+                IP:         c.Request.RemoteAddr,
+            }
+
+            // Track request metrics
+            if !shouldExcludeFromLogging(logCtx.Path) {
+                metrics := monitoring.RequestMetrics{
+                    Path:          logCtx.Path,
+                    Method:        logCtx.Method,
+                    StatusCode:    logCtx.StatusCode,
+                    Duration:      logCtx.Duration,
+                    Timestamp:     logCtx.StartTime,
+                    UserAgent:     logCtx.UserAgent,
+                    ContentLength: c.Request.ContentLength,
+                    RemoteAddr:    logCtx.IP,
+                }
+                requestStats.TrackRequest(metrics)
+            }
+
+            // Log request
+            if !shouldExcludeFromLogging(logCtx.Path) {
+                requestLogger := app.Logger().WithGroup("request").With(
+                    "trace_id", logCtx.TraceID,
+                    "method", logCtx.Method,
+                    "path", logCtx.Path,
+                    "status", fmt.Sprintf("%d [%s]", logCtx.StatusCode, monitoring.GetStatusString(logCtx.StatusCode)),
+                    "duration", monitoring.FormatDuration(duration),
+                    "ip", logCtx.IP,
+                    "user_agent", logCtx.UserAgent,
+                    "content_length", c.Request.ContentLength,
+                    "request_rate", requestStats.GetRequestRate(),
+                )
+
+                requestLogger.Debug("Request processed", "event", "http_request")
+            }
+
+            return err
+        })
+        return e.Next()
+    })
+}
+```
+
+## Trace IDs
+
+From `core/logging/logging.go:27`:
+
+```go
+const (
+    TraceIDHeader = "X-Trace-ID"
+    RequestIDKey  = "request_id"
+)
+```
+
+Every request gets a unique 18-character trace ID:
+
+```
+X-Trace-ID: AbCdEfGhIjKlMnOpQr
+```
+
+Use this ID to correlate logs, errors, and analytics for a single request.
+
+## Log Levels
+
+From `core/logging/logging.go:19`:
+
+```go
+type LogLevel int
+
+const (
+    Debug LogLevel = -4 // Debug level
+    Info  LogLevel = 0  // Info level
+    Warn  LogLevel = 4  // Warning level
+    Error LogLevel = 8  // Error level
+)
+```
+
+## Structured Logging
+
+### Info Logging
+
+From `core/logging/logging.go:75`:
+
+```go
+func InfoWithContext(ctx context.Context, app core.App, message string, data map[string]interface{}) {
+    logger := app.Logger()
+
+    // Add request ID if available
+    if ctx != nil {
+        if id, ok := ctx.Value(RequestIDKey).(string); ok {
+            logger = logger.With("request_id", id)
+        }
+    }
+
+    // Create a new logger with all the data fields
+    for key, value := range data {
+        logger = logger.With(key, value)
+    }
+
+    logger.Info(message)
+}
+```
+
+**Usage:**
+
+```go
+import "github.com/magooney-loon/pb-ext/core/logging"
+
+logging.InfoWithContext(ctx, app, "User action completed", map[string]interface{}{
+    "user_id": "12345",
+    "action": "profile_update",
+    "duration_ms": 42,
+})
+```
+
+### Error Logging
+
+From `core/logging/logging.go:94`:
+
+```go
+func ErrorWithContext(ctx context.Context, app core.App, message string, err error, data map[string]any) {
+    logger := app.Logger()
+
+    // Add request ID if available
+    if ctx != nil {
+        if id, ok := ctx.Value(RequestIDKey).(string); ok {
+            logger = logger.With("request_id", id)
+        }
+    }
+
+    // Add error information
+    if err != nil {
+        logger = logger.With("error", err.Error())
+    }
+
+    // Add all data fields
+    for key, value := range data {
+        logger = logger.With(key, value)
+    }
+
+    logger.Error(message)
+}
+```
+
+**Usage:**
+
+```go
+err := processData()
+if err != nil {
+    logging.ErrorWithContext(ctx, app, "Failed to process data", err, map[string]any{
+        "record_id": recordID,
+        "operation": "update",
+        "attempt": 3,
+    })
+}
+```
+
+## Direct PocketBase Logger Usage
+
+```go
+app.Logger().Info("Simple message")
+
+app.Logger().With(
+    "user_id", userId,
+    "action", "login",
+).Info("User logged in")
+
+app.Logger().WithGroup("database").With(
+    "table", "users",
+    "query_time_ms", 150,
+).Debug("Query executed")
+```
+
+## Error Handling
+
+From `core/logging/error_handler.go:31`:
+
+```go
+// SetupErrorHandler configures global error handling
+func SetupErrorHandler(app core.App, e *core.ServeEvent) {
+    tmpl, err := template.ParseFS(server.TemplateFS, "templates/error.tmpl")
+    if err != nil {
+        app.Logger().Error("Failed to parse error template", "error", err)
+    }
+
+    e.Router.BindFunc(func(c *core.RequestEvent) error {
+        err := c.Next()
+        if err == nil {
+            return nil
+        }
+
+        traceID := c.Request.Header.Get(TraceIDHeader)
+        statusCode := http.StatusInternalServerError
+        errorType := "internal_error"
+        operation := "unknown"
+        message := err.Error()
+
+        // Extract structured error information
+        var srvErr *server.ServerError
+        if errors.As(err, &srvErr) {
+            errorType = srvErr.Type
+            operation = srvErr.Op
+            message = srvErr.Message
+            if srvErr.StatusCode > 0 {
+                statusCode = srvErr.StatusCode
+            }
+        }
+
+        // Log error with context
+        if !shouldExcludeFromLogging(c.Request.URL.Path) {
+            app.Logger().Error("Request error",
+                "trace_id", traceID,
+                "error_type", errorType,
+                "operation", operation,
+                "message", message,
+                "status_code", statusCode,
+                "path", c.Request.URL.Path,
+                "method", c.Request.Method,
+            )
+        }
+
+        // Return JSON or HTML based on request type
+        response := ErrorResponse{
+            Status:     http.StatusText(statusCode),
+            Message:    message,
+            Type:       errorType,
+            Operation:  operation,
+            StatusCode: statusCode,
+            TraceID:    traceID,
+            Timestamp:  time.Now().Format(time.RFC3339),
+        }
+
+        // API routes always return JSON
+        isAPIRoute := strings.HasPrefix(c.Request.URL.Path, "/api/")
+        if isAPIRoute {
+            return c.JSON(statusCode, response)
+        }
+
+        // Browser requests get HTML error page
+        if isBrowserRequest(c.Request) {
+            var buf bytes.Buffer
+            if err := tmpl.Execute(&buf, response); err == nil {
+                return c.HTML(statusCode, buf.String())
+            }
+        }
+
+        return c.JSON(statusCode, response)
+    })
+}
+```
+
+### Error Response Structure
+
+From `core/logging/error_handler.go:19`:
+
+```go
+type ErrorResponse struct {
+    Status     string `json:"status"`
+    Message    string `json:"message"`
+    Type       string `json:"type,omitempty"`
+    Operation  string `json:"operation,omitempty"`
+    StatusCode int    `json:"status_code"`
+    TraceID    string `json:"trace_id"`
+    Timestamp  string `json:"timestamp"`
+}
+```
+
+## Panic Recovery
+
+From `core/logging/error_handler.go:152`:
+
+```go
+// RecoverFromPanic recovers from panics and returns a 500 response
+func RecoverFromPanic(app core.App, c *core.RequestEvent) {
+    if r := recover(); r != nil {
+        traceID := c.Request.Header.Get(TraceIDHeader)
+
+        if !shouldExcludeFromLogging(c.Request.URL.Path) {
+            app.Logger().Error("Panic recovered",
+                "event", "panic",
+                "trace_id", traceID,
+                "error", r,
+                "path", c.Request.URL.Path,
+                "method", c.Request.Method,
+                "stack", string(debug.Stack()),
+            )
+        }
+
+        response := ErrorResponse{
+            Status:     "Internal Server Error",
+            Message:    "A panic occurred while processing your request",
+            Type:       "panic",
+            Operation:  "request_handler",
+            StatusCode: http.StatusInternalServerError,
+            TraceID:    traceID,
+            Timestamp:  time.Now().Format(time.RFC3339),
+        }
+
+        _ = c.JSON(http.StatusInternalServerError, response)
+    }
+}
+```
+
+## Excluded Paths
+
+From `core/logging/logging.go:60`:
+
+```go
+// shouldExcludeFromLogging returns true if the path should be excluded from logging
+func shouldExcludeFromLogging(path string) bool {
+    // Exclude common browser auto-requests
+    if path == "/service-worker.js" || path == "/favicon.ico" || 
+       path == "/manifest.json" || path == "/robots.txt" {
+        return true
+    }
+    // Exclude common static file extensions that may 404
+    for _, ext := range []string{".map", ".ico", ".webmanifest"} {
+        if len(path) > len(ext) && path[len(path)-len(ext):] == ext {
+            return true
+        }
+    }
+    return false
+}
+```
+
+These paths don't generate logs to reduce noise from browser auto-requests.
+
+## Application Lifecycle Logging
+
+From `core/logging/logging.go:128`:
+
+```go
+appLogger.Info("Application starting up", "event", "app_startup")
+
+app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+    appLogger.Info("Application shutting down",
+        "event", "app_shutdown",
+        "is_restart", e.IsRestart,
+        "uptime", time.Since(srv.Stats().StartTime).Round(time.Second).String(),
+        "total_requests", srv.Stats().TotalRequests.Load(),
+        "avg_request_time_ms", srv.Stats().AverageRequestTime.Load(),
+    )
+    return e.Next()
+})
+```
+
+## Log Context Structure
+
+From `core/logging/logging.go:48`:
+
+```go
+type LogContext struct {
+    TraceID    string
+    StartTime  time.Time
+    Method     string
+    Path       string
+    StatusCode int
+    Duration   time.Duration
+    UserAgent  string
+    IP         string
+}
+```
+
+## Example Log Output
+
+### Request Log
+
+```json
+{
+  "time": "2026-03-04T15:04:05.123Z",
+  "level": "DEBUG",
+  "msg": "Request processed",
+  "group": "request",
+  "trace_id": "AbCdEfGhIjKlMnOpQr",
+  "method": "GET",
+  "path": "/api/users",
+  "status": "200 [OK]",
+  "duration": "15ms",
+  "ip": "192.168.1.100",
+  "user_agent": "Mozilla/5.0...",
+  "content_length": 0,
+  "request_rate": 5.2,
+  "event": "http_request"
+}
+```
+
+### Error Log
+
+```json
+{
+  "time": "2026-03-04T15:04:05.456Z",
+  "level": "ERROR",
+  "msg": "Request error",
+  "trace_id": "XyZaBcDeFgHiJkLmNo",
+  "error_type": "database_error",
+  "operation": "find_record",
+  "message": "record not found",
+  "status_code": 404,
+  "path": "/api/users/123",
+  "method": "GET"
+}
+```
+
+### Panic Log
+
+```json
+{
+  "time": "2026-03-04T15:04:05.789Z",
+  "level": "ERROR",
+  "msg": "Panic recovered",
+  "event": "panic",
+  "trace_id": "PqRsTuVwXyZaBcDeFg",
+  "error": "runtime error: index out of range",
+  "path": "/api/process",
+  "method": "POST",
+  "stack": "goroutine 42 [running]:\n..."
+}
+```
+
+## Best Practices
+
+1. **Use trace IDs** for request correlation across logs
+2. **Log structured data** with key-value pairs instead of concatenated strings
+3. **Include context** — user ID, record ID, operation name
+4. **Set appropriate levels** — Debug for verbose, Error for failures
+5. **Don't log sensitive data** — passwords, tokens, PII
+6. **Use WithGroup()** to organize related logs
+7. **Test panic recovery** to ensure graceful error handling
+8. **Monitor log volume** — exclude noisy paths if needed
+
+## Integration with Error Types
+
+From `core/logging/error_handler.go:124`:
+
+```go
+// HandleContextErrors handles context-related errors
+func HandleContextErrors(ctx context.Context, err error, op string) error {
+    if err == nil {
+        return nil
+    }
+
+    if ctx != nil && ctx.Err() != nil {
+        switch ctx.Err() {
+        case context.DeadlineExceeded:
+            return monitoring.NewTimeoutError(op, "operation timed out")
+        case context.Canceled:
+            return monitoring.NewTimeoutError(op, "operation was canceled")
+        }
+    }
+
+    var monErr *monitoring.MonitoringError
+    if errors.As(err, &monErr) {
+        return err
+    }
+
+    var srvErr *server.ServerError
+    if errors.As(err, &srvErr) {
+        return err
+    }
+
+    return monitoring.NewSystemError(op, "unexpected error occurred", err)
+}
+```
+
+## Related
+
+- [Monitoring](/features/monitoring) - Request metrics and system stats
+- [Cron Jobs](/features/cron-jobs) - Job execution logging
+- [Dashboard](/features/dashboard) - View logs and errors

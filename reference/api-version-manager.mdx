@@ -1,0 +1,390 @@
+---
+title: APIVersionManager
+description: Manages multiple API versions with separate registries and OpenAPI specs
+---
+
+## Overview
+
+The `APIVersionManager` orchestrates versioned API documentation by maintaining isolated registries, parsers, and configurations for each API version. It enables side-by-side deployment of multiple API versions with automatic OpenAPI spec generation and Swagger UI support.
+
+## Type Definition
+
+```go
+type APIVersionManager struct {
+    mu              sync.RWMutex
+    versions        []string                             // ordered list of versions
+    defaultVersion  string                               // default version to use
+    registries      map[string]*APIRegistry              // separate registry per version
+    configs         map[string]*APIDocsConfig            // version-specific configs
+    routeRegistrars map[string]func(*VersionedAPIRouter) // per-version route registration callbacks
+    createdAt       time.Time                            // when manager was created
+    lastModified    time.Time                            // last time versions were modified
+}
+```
+
+<Note>
+Each API version gets its own isolated `ASTParser`, `SchemaGenerator`, and `APIRegistry`. This ensures complete separation between versions with independent component schemas and route registrations.
+</Note>
+
+## Constructor Functions
+
+### NewAPIVersionManager
+
+```go
+func NewAPIVersionManager() *APIVersionManager
+```
+
+Creates a new version manager with empty state.
+
+**Returns:**
+- `*APIVersionManager` - New manager instance
+
+**Example:**
+```go
+vm := api.NewAPIVersionManager()
+```
+
+### NewAPIVersionManagerWithDefault
+
+```go
+func NewAPIVersionManagerWithDefault(defaultVersion string) *APIVersionManager
+```
+
+Creates a version manager with a pre-set default version.
+
+<ParamField path="defaultVersion" type="string" required>
+  Version identifier to use as default (e.g., "v1", "v2")
+</ParamField>
+
+**Example:**
+```go
+vm := api.NewAPIVersionManagerWithDefault("v1")
+```
+
+## Version Management
+
+### RegisterVersion
+
+```go
+func (vm *APIVersionManager) RegisterVersion(version string, config *APIDocsConfig) error
+```
+
+Registers a new API version with its own registry and configuration.
+
+<ParamField path="version" type="string" required>
+  Version identifier (e.g., "v1", "v2", "beta")
+</ParamField>
+
+<ParamField path="config" type="*APIDocsConfig">
+  Version-specific configuration (can be nil for defaults)
+</ParamField>
+
+**Returns:**
+- `error` - Error if version already exists or validation fails
+
+**Behavior:**
+1. Validates version string format
+2. Creates version-specific AST parser and schema generator
+3. Creates isolated API registry for the version
+4. Sets version-specific server URL in OpenAPI spec
+5. Automatically becomes default version if first registered
+
+**Example:**
+```go
+config := &api.APIDocsConfig{
+    Title:   "My API v1",
+    Version: "v1",
+    BaseURL: "https://api.example.com",
+    Status:  "stable",
+}
+err := vm.RegisterVersion("v1", config)
+```
+
+### RemoveVersion
+
+```go
+func (vm *APIVersionManager) RemoveVersion(version string) error
+```
+
+Removes a version and its registry. Cannot remove the default version.
+
+<ParamField path="version" type="string" required>
+  Version identifier to remove
+</ParamField>
+
+### GetVersionConfig
+
+```go
+func (vm *APIVersionManager) GetVersionConfig(version string) (*APIDocsConfig, error)
+```
+
+Retrieves the configuration for a specific version.
+
+**Location:** `core/server/api/version_manager.go:198`
+
+### GetVersionRegistry
+
+```go
+func (vm *APIVersionManager) GetVersionRegistry(version string) (*APIRegistry, error)
+```
+
+Retrieves the API registry for a specific version.
+
+**Location:** `core/server/api/version_manager.go:209`
+
+## Route Registration
+
+### SetVersionRouteRegistrar
+
+```go
+func (vm *APIVersionManager) SetVersionRouteRegistrar(
+    version string,
+    registrar func(*VersionedAPIRouter),
+) error
+```
+
+Sets the route registration callback for a version.
+
+<ParamField path="version" type="string" required>
+  Version identifier
+</ParamField>
+
+<ParamField path="registrar" type="func(*VersionedAPIRouter)" required>
+  Function that registers routes for this version
+</ParamField>
+
+**Example:**
+```go
+err := vm.SetVersionRouteRegistrar("v1", func(router *api.VersionedAPIRouter) {
+    router.GET("/users", listUsersHandler)
+    router.POST("/users", createUserHandler)
+})
+```
+
+### RegisterAllVersionRoutes
+
+```go
+func (vm *APIVersionManager) RegisterAllVersionRoutes(e *core.ServeEvent) error
+```
+
+Registers all version routes to a ServeEvent router and docs registries.
+
+**Location:** `core/server/api/version_manager.go:300`
+
+### RegisterAllVersionRoutesForDocs
+
+```go
+func (vm *APIVersionManager) RegisterAllVersionRoutesForDocs() error
+```
+
+Registers all version routes only to docs registries (for build-time spec generation).
+
+**Location:** `core/server/api/version_manager.go:315`
+
+## Version Information
+
+### GetDefaultVersion
+
+```go
+func (vm *APIVersionManager) GetDefaultVersion() string
+```
+
+Returns the default version identifier.
+
+### SetDefaultVersion
+
+```go
+func (vm *APIVersionManager) SetDefaultVersion(version string) error
+```
+
+Sets the default API version. Version must exist.
+
+### GetAllVersions
+
+```go
+func (vm *APIVersionManager) GetAllVersions() []string
+```
+
+Returns all registered versions (sorted). Returns a copy to prevent external modifications.
+
+### GetVersionInfo
+
+```go
+func (vm *APIVersionManager) GetVersionInfo(version string) (*VersionInfo, error)
+```
+
+Returns detailed information about a specific version.
+
+**Returns:**
+```go
+type VersionInfo struct {
+    Version   string         `json:"version"`
+    Status    string         `json:"status"`      // "stable", "development", "deprecated"
+    CreatedAt time.Time      `json:"created_at"`
+    UpdatedAt time.Time      `json:"updated_at"`
+    Config    *APIDocsConfig `json:"config"`
+    Stats     map[string]int `json:"stats"`
+    Endpoints int            `json:"endpoints"`
+}
+```
+
+**Location:** `core/server/api/version_manager.go:650`
+
+## HTTP Handlers
+
+### RegisterWithServer
+
+```go
+func (vm *APIVersionManager) RegisterWithServer(app core.App)
+```
+
+Registers version management endpoints with the PocketBase app:
+
+- `GET /api/docs/versions` - List all versions (requires auth)
+- `GET /api/docs/debug/ast` - AST pipeline introspection (requires auth)
+- `GET /api/docs/{version}` - Version-specific OpenAPI spec (requires auth)
+- `GET /api/docs/{version}/spec` - Public OpenAPI spec (if PublicSwagger enabled)
+- `GET /api/docs/{version}/swagger` - Swagger UI (if PublicSwagger enabled)
+- `GET /api/{version}/schema/config` - Schema configuration (requires auth)
+
+**Location:** `core/server/api/version_manager.go:706`
+
+### VersionsHandler
+
+```go
+func (vm *APIVersionManager) VersionsHandler(c *core.RequestEvent) error
+```
+
+HTTP handler that returns list of all available API versions.
+
+**Response:**
+```json
+{
+    "versions": [...],
+    "default_version": "v1",
+    "total_versions": 2,
+    "generated_at": "2024-03-04T12:00:00Z"
+}
+```
+
+**Location:** `core/server/api/version_manager.go:756`
+
+### GetVersionOpenAPI
+
+```go
+func (vm *APIVersionManager) GetVersionOpenAPI(
+    c *core.RequestEvent,
+    version string,
+) error
+```
+
+Returns the complete OpenAPI schema for a specific version.
+
+**Priority:**
+1. Direct spec loading from disk (if available)
+2. Fallback to runtime registry generation
+
+**Location:** `core/server/api/version_manager.go:827`
+
+### ServeSwaggerUI
+
+```go
+func (vm *APIVersionManager) ServeSwaggerUI(
+    c *core.RequestEvent,
+    version string,
+) error
+```
+
+Serves the Swagger UI HTML page for the given API version with dark mode support.
+
+**Location:** `core/server/api/version_manager.go:898`
+
+<Note>
+Uses SwaggerDark theme by Amoenus (MIT License) for automatic dark mode support based on user's system preferences.
+</Note>
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "github.com/magooney-loon/pb-ext/core/server/api"
+    "github.com/pocketbase/pocketbase/core"
+)
+
+func setupVersionedAPI(app core.App) (*api.APIVersionManager, error) {
+    // Create version manager
+    vm := api.NewAPIVersionManagerWithDefault("v1")
+    
+    // Register v1
+    v1Config := &api.APIDocsConfig{
+        Title:         "My API v1",
+        Version:       "v1",
+        BaseURL:       "https://api.example.com",
+        Status:        "stable",
+        PublicSwagger: true,
+    }
+    if err := vm.RegisterVersion("v1", v1Config); err != nil {
+        return nil, err
+    }
+    
+    // Register v2 (beta)
+    v2Config := &api.APIDocsConfig{
+        Title:         "My API v2 (Beta)",
+        Version:       "v2",
+        BaseURL:       "https://api.example.com",
+        Status:        "development",
+        PublicSwagger: false,
+    }
+    if err := vm.RegisterVersion("v2", v2Config); err != nil {
+        return nil, err
+    }
+    
+    // Register routes for each version
+    if err := vm.SetVersionRouteRegistrar("v1", registerV1Routes); err != nil {
+        return nil, err
+    }
+    if err := vm.SetVersionRouteRegistrar("v2", registerV2Routes); err != nil {
+        return nil, err
+    }
+    
+    // Register HTTP endpoints
+    vm.RegisterWithServer(app)
+    
+    return vm, nil
+}
+
+func registerV1Routes(router *api.VersionedAPIRouter) {
+    api := router.SetPrefix("/api/v1")
+    
+    api.GET("/users", listUsersHandler)
+    api.POST("/users", createUserHandler)
+    api.GET("/users/{id}", getUserHandler)
+}
+
+func registerV2Routes(router *api.VersionedAPIRouter) {
+    api := router.SetPrefix("/api/v2")
+    
+    // v2 has additional endpoints
+    api.GET("/users", listUsersV2Handler)
+    api.POST("/users", createUserV2Handler)
+    api.GET("/users/{id}", getUserV2Handler)
+    api.PATCH("/users/{id}", patchUserHandler) // New in v2
+}
+```
+
+## Best Practices
+
+1. **Version Naming**: Use semantic versions ("v1", "v2") or descriptive names ("stable", "beta")
+2. **Default Version**: Always set a stable version as default
+3. **Public Access**: Only enable `PublicSwagger` for stable, production-ready versions
+4. **Route Isolation**: Use `SetPrefix()` to namespace each version's routes
+5. **Deprecation**: Mark old versions with `Status: "deprecated"` before removal
+6. **Testing**: Use `RegisterAllVersionRoutesForDocs()` for build-time spec generation
+
+## Related
+
+- [VersionedAPIRouter](/reference/versioned-router) - Version-specific route registration
+- [APIRegistry](/reference/api-version-manager) - Per-version endpoint registry
+- [SpecGenerator](/reference/spec-generator) - Build-time spec generation

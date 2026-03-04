@@ -1,0 +1,443 @@
+---
+title: VersionedAPIRouter
+description: Version-specific router with automatic OpenAPI documentation
+---
+
+## Overview
+
+The `VersionedAPIRouter` provides version-specific route registration with automatic documentation generation. It wraps PocketBase's router while maintaining isolated registries for each API version.
+
+## Type Definition
+
+```go
+type VersionedAPIRouter struct {
+    serveEvent *core.ServeEvent
+    version    string
+    manager    *APIVersionManager
+    registry   *APIRegistry  // version-specific registry
+}
+```
+
+<Note>
+The `VersionedAPIRouter` can operate in two modes:
+1. **Runtime mode** - With `serveEvent` for actual HTTP routing
+2. **Docs-only mode** - Without `serveEvent` for build-time spec generation
+</Note>
+
+## HTTP Method Registration
+
+All HTTP methods return a `*VersionedRouteChain` for middleware binding.
+
+### GET
+
+```go
+func (vr *VersionedAPIRouter) GET(
+    path string,
+    handler func(*core.RequestEvent) error,
+) *VersionedRouteChain
+```
+
+Registers a GET route with automatic documentation.
+
+**Location:** `core/server/api/version_manager.go:358`
+
+**Example:**
+```go
+router.GET("/users/{id}", func(e *core.RequestEvent) error {
+    id := e.Request.PathValue("id")
+    // handler logic
+    return e.JSON(200, user)
+})
+```
+
+### POST
+
+```go
+func (vr *VersionedAPIRouter) POST(
+    path string,
+    handler func(*core.RequestEvent) error,
+) *VersionedRouteChain
+```
+
+Registers a POST route with automatic documentation.
+
+**Location:** `core/server/api/version_manager.go:377`
+
+### PUT
+
+```go
+func (vr *VersionedAPIRouter) PUT(
+    path string,
+    handler func(*core.RequestEvent) error,
+) *VersionedRouteChain
+```
+
+Registers a PUT route with automatic documentation.
+
+**Location:** `core/server/api/version_manager.go:434`
+
+### PATCH
+
+```go
+func (vr *VersionedAPIRouter) PATCH(
+    path string,
+    handler func(*core.RequestEvent) error,
+) *VersionedRouteChain
+```
+
+Registers a PATCH route with automatic documentation.
+
+**Location:** `core/server/api/version_manager.go:395`
+
+### DELETE
+
+```go
+func (vr *VersionedAPIRouter) DELETE(
+    path string,
+    handler func(*core.RequestEvent) error,
+) *VersionedRouteChain
+```
+
+Registers a DELETE route with automatic documentation.
+
+**Location:** `core/server/api/version_manager.go:414`
+
+## Prefixed Router
+
+### SetPrefix
+
+```go
+func (vr *VersionedAPIRouter) SetPrefix(prefix string) *PrefixedRouter
+```
+
+Creates a prefixed router that automatically prepends a path prefix to all registered routes.
+
+<ParamField path="prefix" type="string" required>
+  Path prefix to prepend (e.g., "/api/v1")
+</ParamField>
+
+**Returns:**
+- `*PrefixedRouter` - Router with automatic path prefixing
+
+**Location:** `core/server/api/version_manager.go:453`
+
+**Example:**
+```go
+api := router.SetPrefix("/api/v1")
+api.GET("/users", listHandler)     // Actually registers /api/v1/users
+api.POST("/users", createHandler)  // Actually registers /api/v1/users
+```
+
+## PrefixedRouter Type
+
+```go
+type PrefixedRouter struct {
+    router *VersionedAPIRouter
+    prefix string
+}
+```
+
+### PrefixedRouter Methods
+
+All HTTP methods work identically to `VersionedAPIRouter` but automatically prepend the prefix:
+
+- `GET(path, handler)` - Location: `core/server/api/version_manager.go:467`
+- `POST(path, handler)` - Location: `core/server/api/version_manager.go:472`
+- `PUT(path, handler)` - Location: `core/server/api/version_manager.go:477`
+- `PATCH(path, handler)` - Location: `core/server/api/version_manager.go:482`
+- `DELETE(path, handler)` - Location: `core/server/api/version_manager.go:487`
+
+### CRUD
+
+```go
+func (pr *PrefixedRouter) CRUD(
+    resource string,
+    handlers CRUDHandlers,
+    authMiddleware ...interface{},
+) 
+```
+
+Registers standard CRUD routes for a resource with optional authentication.
+
+<ParamField path="resource" type="string" required>
+  Resource name (e.g., "users", "posts")
+</ParamField>
+
+<ParamField path="handlers" type="CRUDHandlers" required>
+  CRUD operation handlers
+</ParamField>
+
+<ParamField path="authMiddleware" type="...interface{}">
+  Optional auth middleware applied to mutating operations (Create, Update, Patch, Delete)
+</ParamField>
+
+**Location:** `core/server/api/version_manager.go:492`
+
+**Registered Routes:**
+- `GET /{resource}` - List
+- `POST /{resource}` - Create (with auth)
+- `GET /{resource}/{id}` - Get
+- `PUT /{resource}/{id}` - Update (with auth)
+- `PATCH /{resource}/{id}` - Patch (with auth)
+- `DELETE /{resource}/{id}` - Delete (with auth)
+
+**Example:**
+```go
+type CRUDHandlers struct {
+    List   func(*core.RequestEvent) error
+    Create func(*core.RequestEvent) error
+    Get    func(*core.RequestEvent) error
+    Update func(*core.RequestEvent) error
+    Patch  func(*core.RequestEvent) error
+    Delete func(*core.RequestEvent) error
+}
+
+api := router.SetPrefix("/api/v1")
+api.CRUD("users", CRUDHandlers{
+    List:   listUsers,
+    Create: createUser,
+    Get:    getUser,
+    Update: updateUser,
+    Patch:  patchUser,
+    Delete: deleteUser,
+}, apis.RequireAuth())
+```
+
+## Route Chain (Middleware Binding)
+
+```go
+type VersionedRouteChain struct {
+    router      *VersionedAPIRouter
+    method      string
+    path        string
+    handler     func(*core.RequestEvent) error
+    middlewares []interface{}
+    pbRoute     *router.Route[*core.RequestEvent]
+}
+```
+
+### Bind
+
+```go
+func (vrc *VersionedRouteChain) Bind(middlewares ...interface{}) *VersionedRouteChain
+```
+
+Binds middleware to the route. Accepts both `*hook.Handler[*core.RequestEvent]` and plain `func(*core.RequestEvent) error`.
+
+<ParamField path="middlewares" type="...interface{}" required>
+  Middleware handlers (hooks or plain functions)
+</ParamField>
+
+**Behavior:**
+1. Stores middlewares for documentation analysis
+2. Re-registers route with middleware information in registry
+3. Binds middleware to actual PocketBase route for runtime execution
+
+**Location:** `core/server/api/version_manager.go:563`
+
+**Example:**
+```go
+router.POST("/users", createHandler).Bind(
+    apis.RequireAuth(),
+    rateLimit,
+    validateInput,
+)
+```
+
+### BindFunc
+
+```go
+func (vrc *VersionedRouteChain) BindFunc(
+    middlewareFuncs ...func(*core.RequestEvent) error,
+) *VersionedRouteChain
+```
+
+Binds plain middleware functions to the route. Ergonomic counterpart to `Bind()`.
+
+**Location:** `core/server/api/version_manager.go:594`
+
+**Example:**
+```go
+router.GET("/users", listHandler).BindFunc(
+    func(e *core.RequestEvent) error {
+        // middleware logic
+        return e.Next()
+    },
+)
+```
+
+## Complete Examples
+
+### Basic Route Registration
+
+```go
+func registerRoutes(router *api.VersionedAPIRouter) {
+    // Simple routes
+    router.GET("/health", healthHandler)
+    router.GET("/users", listUsersHandler)
+    
+    // With middleware
+    router.POST("/users", createUserHandler).Bind(
+        apis.RequireAuth(),
+    )
+    
+    // With path parameters
+    router.GET("/users/{id}", getUserHandler)
+    router.DELETE("/users/{id}", deleteUserHandler).Bind(
+        apis.RequireAuth(),
+        apis.RequireAdminAuth(),
+    )
+}
+```
+
+### Using Prefixed Router
+
+```go
+func registerPrefixedRoutes(router *api.VersionedAPIRouter) {
+    api := router.SetPrefix("/api/v1")
+    
+    // All routes automatically prefixed
+    api.GET("/users", listHandler)           // /api/v1/users
+    api.POST("/users", createHandler)        // /api/v1/users
+    api.GET("/users/{id}", getHandler)       // /api/v1/users/{id}
+    api.DELETE("/users/{id}", deleteHandler) // /api/v1/users/{id}
+}
+```
+
+### CRUD Resource Registration
+
+```go
+func registerCRUDRoutes(router *api.VersionedAPIRouter) {
+    api := router.SetPrefix("/api/v1")
+    
+    // Register full CRUD for users
+    api.CRUD("users", api.CRUDHandlers{
+        List:   listUsers,
+        Create: createUser,
+        Get:    getUser,
+        Update: updateUser,
+        Delete: deleteUser,
+    }, apis.RequireAuth())
+    
+    // Register full CRUD for posts
+    api.CRUD("posts", api.CRUDHandlers{
+        List:   listPosts,
+        Create: createPost,
+        Get:    getPost,
+        Update: updatePost,
+        Patch:  patchPost,
+        Delete: deletePost,
+    }, apis.RequireAuth())
+}
+```
+
+### Middleware Chaining
+
+```go
+func registerWithMiddleware(router *api.VersionedAPIRouter) {
+    api := router.SetPrefix("/api/v1")
+    
+    // Multiple middleware handlers
+    api.POST("/users", createUserHandler).Bind(
+        apis.RequireAuth(),
+        rateLimitMiddleware(100, time.Minute),
+        validateUserInput,
+        auditLogMiddleware,
+    )
+    
+    // Admin-only endpoint
+    api.DELETE("/users/{id}", deleteUserHandler).Bind(
+        apis.RequireAuth(),
+        apis.RequireAdminAuth(),
+    )
+}
+
+func rateLimitMiddleware(limit int, window time.Duration) *hook.Handler[*core.RequestEvent] {
+    return &hook.Handler[*core.RequestEvent]{
+        Func: func(e *core.RequestEvent) error {
+            // rate limiting logic
+            return e.Next()
+        },
+    }
+}
+```
+
+### Multi-Version API
+
+```go
+func setupMultiVersionAPI(app core.App, vm *api.APIVersionManager) error {
+    // Register v1 routes
+    err := vm.SetVersionRouteRegistrar("v1", func(router *api.VersionedAPIRouter) {
+        api := router.SetPrefix("/api/v1")
+        api.GET("/users", listUsersV1)
+        api.POST("/users", createUserV1)
+    })
+    if err != nil {
+        return err
+    }
+    
+    // Register v2 routes (with breaking changes)
+    err = vm.SetVersionRouteRegistrar("v2", func(router *api.VersionedAPIRouter) {
+        api := router.SetPrefix("/api/v2")
+        api.GET("/users", listUsersV2)        // Different response format
+        api.POST("/users", createUserV2)      // Different request schema
+        api.PATCH("/users/{id}", patchUserV2) // New endpoint in v2
+    })
+    if err != nil {
+        return err
+    }
+    
+    // Bind routes to server
+    app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+        return vm.RegisterAllVersionRoutes(e)
+    })
+    
+    return nil
+}
+```
+
+## Best Practices
+
+1. **Use SetPrefix**: Always use `SetPrefix()` for cleaner route definitions
+2. **Middleware on Mutations**: Apply auth middleware to POST/PUT/PATCH/DELETE operations
+3. **CRUD for Resources**: Use `CRUD()` for standard REST resources to reduce boilerplate
+4. **Path Parameters**: Use `{param}` syntax for path parameters (auto-detected in docs)
+5. **Consistent Naming**: Use plural nouns for resources (`/users`, not `/user`)
+6. **Version Prefixes**: Include version in path prefix (`/api/v1`)
+
+## Automatic Documentation
+
+The router automatically extracts documentation from your code:
+
+- **Request Body**: Detected from `c.BindBody(&req)` or `json.Decode`
+- **Response Schema**: Detected from `c.JSON(status, response)`
+- **Path Parameters**: Extracted from `{param}` patterns
+- **Query Parameters**: Detected from `e.Request.URL.Query().Get("param")`
+- **Auth Requirements**: Detected from `apis.RequireAuth()` middleware
+
+**Example:**
+```go
+// API_DESC Creates a new user account
+// API_TAGS users, authentication
+func createUser(e *core.RequestEvent) error {
+    var req CreateUserRequest
+    if err := e.BindBody(&req); err != nil {
+        return err
+    }
+    
+    user := User{...}
+    return e.JSON(200, user)
+}
+```
+
+This automatically generates OpenAPI documentation with:
+- Request body schema from `CreateUserRequest`
+- Response schema from `User`
+- Tags: `users`, `authentication`
+- Description: "Creates a new user account"
+
+## Related
+
+- [APIVersionManager](/reference/api-version-manager) - Multi-version API management
+- [APIRegistry](/reference/api-version-manager) - Endpoint registry and spec generation
+- [Middleware Guide](/advanced/middleware) - Creating custom middleware

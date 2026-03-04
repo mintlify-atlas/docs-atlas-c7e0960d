@@ -1,0 +1,531 @@
+---
+title: ExecutionLogger
+description: Structured logging for cron job executions
+---
+
+## Overview
+
+The `ExecutionLogger` provides structured logging methods for job executions. It captures all output to a buffer which is automatically saved to the `_job_logs` collection on job completion.
+
+## Type Definition
+
+```go
+type ExecutionLogger struct {
+    jobID       string
+    executionID string
+    buffer      *bytes.Buffer
+    mutex       *sync.Mutex
+    startTime   time.Time
+    logger      *Logger
+}
+```
+
+<Note>
+The ExecutionLogger is automatically created and passed to your job function by the JobManager. You don't need to create it manually.
+</Note>
+
+## Constructor
+
+### NewExecutionLogger
+
+```go
+func NewExecutionLogger(jobID, executionID string, l *Logger) *ExecutionLogger
+```
+
+<ParamField path="jobID" type="string" required>
+  Job identifier
+</ParamField>
+
+<ParamField path="executionID" type="string" required>
+  Unique execution identifier
+</ParamField>
+
+<ParamField path="l" type="*Logger" required>
+  Parent logger instance
+</ParamField>
+
+**Location:** `core/jobs/logger.go:569`
+
+<Note>
+You typically don't need to call this directly. The JobManager creates ExecutionLogger instances automatically.
+</Note>
+
+## Logging Methods
+
+### Info
+
+```go
+func (el *ExecutionLogger) Info(format string, args ...interface{})
+```
+
+Logs an informational message.
+
+**Location:** `core/jobs/logger.go:580`
+
+**Example:**
+```go
+log.Info("Processing started at %s", time.Now().Format(time.RFC3339))
+log.Info("Found %d records to process", recordCount)
+```
+
+### Error
+
+```go
+func (el *ExecutionLogger) Error(format string, args ...interface{})
+```
+
+Logs an error message (does not fail the job).
+
+**Location:** `core/jobs/logger.go:581`
+
+**Example:**
+```go
+log.Error("Failed to process record %s: %v", recordID, err)
+log.Error("Retrying operation (attempt %d/%d)", attempt, maxAttempts)
+```
+
+### Debug
+
+```go
+func (el *ExecutionLogger) Debug(format string, args ...interface{})
+```
+
+Logs a debug message.
+
+**Location:** `core/jobs/logger.go:582`
+
+**Example:**
+```go
+log.Debug("Cache hit for key: %s", cacheKey)
+log.Debug("Query took %v to execute", queryDuration)
+```
+
+### Warn
+
+```go
+func (el *ExecutionLogger) Warn(format string, args ...interface{})
+```
+
+Logs a warning message.
+
+**Location:** `core/jobs/logger.go:583`
+
+**Example:**
+```go
+log.Warn("Skipping invalid record: %s", recordID)
+log.Warn("API rate limit approaching (%d/%d)", current, limit)
+```
+
+## Specialized Methods
+
+### Start
+
+```go
+func (el *ExecutionLogger) Start(jobName string)
+```
+
+Logs the job start message with rocket emoji.
+
+<ParamField path="jobName" type="string" required>
+  Human-readable job name
+</ParamField>
+
+**Location:** `core/jobs/logger.go:591`
+
+**Example:**
+```go
+func myJob(log *jobs.ExecutionLogger) {
+    log.Start("Daily Cleanup Job")
+    // job logic
+}
+// Output: [2024-03-04 12:00:00.000] [INFO] [daily_cleanup] 🚀 Starting job: Daily Cleanup Job
+```
+
+### Success
+
+```go
+func (el *ExecutionLogger) Success(format string, args ...interface{})
+```
+
+Logs a success message with checkmark emoji.
+
+**Location:** `core/jobs/logger.go:585`
+
+**Example:**
+```go
+log.Success("Processed %d records successfully", count)
+// Output: [2024-03-04 12:00:05.123] [INFO] [daily_cleanup] ✅ Processed 42 records successfully
+```
+
+### Progress
+
+```go
+func (el *ExecutionLogger) Progress(format string, args ...interface{})
+```
+
+Logs a progress update with spinner emoji.
+
+**Location:** `core/jobs/logger.go:588`
+
+**Example:**
+```go
+for i, item := range items {
+    log.Progress("Processing item %d/%d", i+1, len(items))
+    processItem(item)
+}
+// Output: [2024-03-04 12:00:01.000] [INFO] [job_id] 🔄 Processing item 1/100
+```
+
+### Complete
+
+```go
+func (el *ExecutionLogger) Complete(message string)
+```
+
+Logs job completion with duration and checkmark emoji.
+
+<ParamField path="message" type="string" required>
+  Completion message
+</ParamField>
+
+**Location:** `core/jobs/logger.go:594`
+
+**Example:**
+```go
+log.Complete("All records processed successfully")
+// Output: [2024-03-04 12:00:10.000] [INFO] [job_id] ✅ Job completed successfully in 10s: All records processed successfully
+```
+
+### Fail
+
+```go
+func (el *ExecutionLogger) Fail(err error)
+```
+
+Marks the job as failed with cross emoji. Sets job status to "failed".
+
+<ParamField path="err" type="error" required>
+  Error that caused the failure
+</ParamField>
+
+**Location:** `core/jobs/logger.go:597`
+
+**Example:**
+```go
+if err := criticalOperation(); err != nil {
+    log.Error("Critical operation failed: %v", err)
+    log.Fail(err)
+    return
+}
+// Output: [2024-03-04 12:00:15.000] [ERROR] [job_id] ❌ Job failed after 15s: database connection lost
+```
+
+### Statistics
+
+```go
+func (el *ExecutionLogger) Statistics(stats map[string]interface{})
+```
+
+Logs job statistics with chart emoji.
+
+<ParamField path="stats" type="map[string]interface{}" required>
+  Statistics to log (key-value pairs)
+</ParamField>
+
+**Location:** `core/jobs/logger.go:600`
+
+**Example:**
+```go
+log.Statistics(map[string]interface{}{
+    "records_processed": 1000,
+    "records_skipped": 42,
+    "success_rate": "95.8%",
+    "duration_seconds": 45.2,
+})
+// Output:
+// [2024-03-04 12:00:10.000] [INFO] [job_id] 📊 Statistics:
+// [2024-03-04 12:00:10.000] [INFO] [job_id]    • records_processed: 1000
+// [2024-03-04 12:00:10.000] [INFO] [job_id]    • records_skipped: 42
+// [2024-03-04 12:00:10.000] [INFO] [job_id]    • success_rate: 95.8%
+// [2024-03-04 12:00:10.000] [INFO] [job_id]    • duration_seconds: 45.2
+```
+
+## Utility Methods
+
+### GetOutput
+
+```go
+func (el *ExecutionLogger) GetOutput() string
+```
+
+Returns the complete buffered output (thread-safe).
+
+**Location:** `core/jobs/logger.go:607`
+
+### GetDuration
+
+```go
+func (el *ExecutionLogger) GetDuration() time.Duration
+```
+
+Returns the elapsed time since job start.
+
+**Location:** `core/jobs/logger.go:613`
+
+### WithContext
+
+```go
+func (el *ExecutionLogger) WithContext(key, value string) *ExecutionLogger
+```
+
+Creates a contextual logger with additional key-value pair in job ID.
+
+<ParamField path="key" type="string" required>
+  Context key
+</ParamField>
+
+<ParamField path="value" type="string" required>
+  Context value
+</ParamField>
+
+**Location:** `core/jobs/logger.go:617`
+
+**Example:**
+```go
+for _, userID := range userIDs {
+    userLog := log.WithContext("user", userID)
+    userLog.Info("Processing user data")
+    processUser(userID, userLog)
+}
+// Output: [2024-03-04 12:00:00.000] [INFO] [job_id[user=123]] Processing user data
+```
+
+## Complete Examples
+
+### Basic Job Structure
+
+```go
+func dailyCleanup(log *jobs.ExecutionLogger) {
+    log.Start("Daily Cleanup")
+    
+    log.Info("Starting cleanup at %s", time.Now().Format(time.RFC3339))
+    
+    deleted := cleanupOldRecords()
+    log.Success("Deleted %d old records", deleted)
+    
+    optimized := optimizeDatabase()
+    log.Success("Optimized %d tables", optimized)
+    
+    log.Statistics(map[string]interface{}{
+        "records_deleted": deleted,
+        "tables_optimized": optimized,
+    })
+    
+    log.Complete("Cleanup finished successfully")
+}
+```
+
+### Error Handling
+
+```go
+func sendEmailDigest(log *jobs.ExecutionLogger) {
+    log.Start("Email Digest")
+    
+    users, err := fetchActiveUsers()
+    if err != nil {
+        log.Error("Failed to fetch users: %v", err)
+        log.Fail(err)
+        return
+    }
+    
+    log.Info("Found %d active users", len(users))
+    
+    sent := 0
+    failed := 0
+    
+    for _, user := range users {
+        if err := sendEmail(user); err != nil {
+            log.Error("Failed to send email to %s: %v", user.Email, err)
+            failed++
+        } else {
+            sent++
+        }
+    }
+    
+    log.Statistics(map[string]interface{}{
+        "emails_sent": sent,
+        "emails_failed": failed,
+        "success_rate": fmt.Sprintf("%.1f%%", float64(sent)/float64(len(users))*100),
+    })
+    
+    if failed > 0 {
+        log.Warn("Completed with %d failures", failed)
+    }
+    
+    log.Complete("Digest sent to %d users", sent)
+}
+```
+
+### Progress Tracking
+
+```go
+func processLargeDataset(log *jobs.ExecutionLogger) {
+    log.Start("Data Processing")
+    
+    items := fetchItemsToProcess()
+    total := len(items)
+    
+    log.Info("Processing %d items", total)
+    
+    processed := 0
+    errors := 0
+    
+    for i, item := range items {
+        log.Progress("Processing item %d/%d", i+1, total)
+        
+        if err := processItem(item); err != nil {
+            log.Error("Failed to process item %s: %v", item.ID, err)
+            errors++
+        } else {
+            processed++
+        }
+        
+        // Log progress every 100 items
+        if (i+1)%100 == 0 {
+            log.Info("Checkpoint: processed %d/%d items", i+1, total)
+        }
+    }
+    
+    log.Statistics(map[string]interface{}{
+        "total_items": total,
+        "processed": processed,
+        "errors": errors,
+        "success_rate": fmt.Sprintf("%.2f%%", float64(processed)/float64(total)*100),
+    })
+    
+    if errors > 0 {
+        log.Warn("Completed with %d errors", errors)
+    } else {
+        log.Success("All items processed successfully")
+    }
+    
+    log.Complete("Processing finished")
+}
+```
+
+### Contextual Logging
+
+```go
+func syncUserData(log *jobs.ExecutionLogger) {
+    log.Start("User Data Sync")
+    
+    users := fetchUsers()
+    log.Info("Syncing data for %d users", len(users))
+    
+    for _, user := range users {
+        // Create user-specific logger
+        userLog := log.WithContext("user", user.ID)
+        
+        userLog.Info("Starting sync for %s", user.Email)
+        
+        if err := syncUserProfile(user); err != nil {
+            userLog.Error("Profile sync failed: %v", err)
+            continue
+        }
+        userLog.Success("Profile synced")
+        
+        if err := syncUserSettings(user); err != nil {
+            userLog.Error("Settings sync failed: %v", err)
+            continue
+        }
+        userLog.Success("Settings synced")
+        
+        userLog.Info("Sync complete for %s", user.Email)
+    }
+    
+    log.Complete("Data sync finished for all users")
+}
+```
+
+### Retry Logic
+
+```go
+func backupDatabase(log *jobs.ExecutionLogger) {
+    log.Start("Database Backup")
+    
+    maxRetries := 3
+    var lastErr error
+    
+    for attempt := 1; attempt <= maxRetries; attempt++ {
+        log.Info("Backup attempt %d/%d", attempt, maxRetries)
+        
+        if err := performBackup(); err != nil {
+            lastErr = err
+            log.Warn("Attempt %d failed: %v", attempt, err)
+            
+            if attempt < maxRetries {
+                backoff := time.Duration(attempt) * 5 * time.Second
+                log.Info("Retrying in %v...", backoff)
+                time.Sleep(backoff)
+                continue
+            }
+        } else {
+            log.Success("Backup created successfully")
+            log.Complete("Backup job finished")
+            return
+        }
+    }
+    
+    log.Error("All backup attempts failed")
+    log.Fail(fmt.Errorf("backup failed after %d attempts: %w", maxRetries, lastErr))
+}
+```
+
+## Log Output Format
+
+```
+[TIMESTAMP] [LEVEL] [JOB_ID] MESSAGE
+```
+
+**Example:**
+```
+[2024-03-04 12:00:00.000] [INFO] [daily_cleanup] 🚀 Starting job: Daily Cleanup
+[2024-03-04 12:00:01.234] [INFO] [daily_cleanup] Processing 1000 records
+[2024-03-04 12:00:05.678] [INFO] [daily_cleanup] ✅ Processed 1000 records successfully
+[2024-03-04 12:00:05.680] [INFO] [daily_cleanup] 📊 Statistics:
+[2024-03-04 12:00:05.680] [INFO] [daily_cleanup]    • records_processed: 1000
+[2024-03-04 12:00:05.680] [INFO] [daily_cleanup]    • duration_seconds: 5.68
+[2024-03-04 12:00:05.680] [INFO] [daily_cleanup] ✅ Job completed successfully in 5.68s: Cleanup finished
+```
+
+## Emoji Reference
+
+| Method | Emoji | Purpose |
+|--------|-------|----------|
+| `Start()` | 🚀 | Job start |
+| `Success()` | ✅ | Success message |
+| `Progress()` | 🔄 | Progress update |
+| `Complete()` | ✅ | Job completion |
+| `Fail()` | ❌ | Job failure |
+| `Statistics()` | 📊 | Statistics display |
+
+<Note>
+Emojis make logs more readable in the dashboard UI. They're automatically included by the specialized methods.
+</Note>
+
+## Best Practices
+
+1. **Always Start and Finish**: Call `Start()` at the beginning and `Complete()` or `Fail()` at the end
+2. **Use Appropriate Levels**: Info for normal flow, Warn for issues, Error for failures
+3. **Log Statistics**: Always use `Statistics()` to report metrics
+4. **Progress Updates**: Use `Progress()` for long-running operations
+5. **Context for Multi-Entity Jobs**: Use `WithContext()` when processing multiple entities
+6. **Structured Data**: Include structured data in logs (IDs, counts, durations)
+7. **Avoid Sensitive Data**: Don't log passwords, API keys, or personal information
+8. **Concise Messages**: Keep log messages short and actionable
+
+## Related
+
+- [JobManager](/reference/job-manager) - Job registration and execution
+- [Logger](/reference/execution-logger) - Underlying log storage system
+- [Job Dashboard](/features/dashboard) - Viewing job logs in the UI

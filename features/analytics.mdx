@@ -1,0 +1,423 @@
+---
+title: Analytics
+description: GDPR-compliant visitor tracking with zero personal data storage
+---
+
+pb-ext includes a privacy-first analytics system that tracks page views, device types, and browsers without storing any personally identifiable information (PII). No IP addresses, user agents, or visitor IDs are persisted to the database.
+
+## Key Features
+
+- **Zero PII storage** — no IP addresses, user agents, or visitor IDs in the database
+- **Aggregated daily counters** — efficient storage in `_analytics` collection
+- **Session ring buffer** — 50 most recent visits in `_analytics_sessions`
+- **Automatic retention** — 90 days for analytics, 50 records for sessions
+- **Bot filtering** — excludes crawlers and automated traffic
+- **Device and browser detection** — desktop/mobile/tablet classification
+
+## How It Works
+
+### Request Tracking
+
+From `core/analytics/collector.go:34`:
+
+```go
+// track records a page view: upserts the daily counter and inserts a session ring entry.
+// No personal data (IP, UA, visitor ID) is written to the database.
+func (a *Analytics) track(r *http.Request) {
+    path := r.URL.Path
+    ua := r.UserAgent()
+    deviceType, browser, os := parseUA(ua)
+    date := time.Now().Format("2006-01-02")
+
+    // isNewSession uses the in-memory map keyed by hash(ip+ua) — never persisted.
+    ip := clientIP(r)
+    sessionKey := sessionHash(ip, ua)
+    isNew := a.isNewSession(sessionKey)
+
+    if err := a.upsertDailyCounter(path, date, deviceType, browser, isNew); err != nil {
+        a.app.Logger().Error("analytics upsert failed", "path", path, "error", err)
+    }
+
+    if err := a.insertSessionEntry(path, deviceType, browser, os, isNew); err != nil {
+        a.app.Logger().Error("analytics session insert failed", "path", path, "error", err)
+    }
+}
+```
+
+### Privacy-First Design
+
+From `core/analytics/analytics.go:11`:
+
+```go
+// Analytics tracks page views using aggregated daily counters and a session ring buffer.
+// No personal data (IP, user agent, visitor ID) is persisted.
+type Analytics struct {
+    app core.App
+
+    // knownVisitors is an ephemeral in-memory session map.
+    // Keys are FNV-1a hashes of (ip+ua) — never written to the database.
+    // Used only to determine whether a visit is new within the session window.
+    knownVisitors map[string]time.Time
+    visitorsMu    sync.RWMutex
+    sessionWindow time.Duration
+}
+```
+
+**Session Hashing (core/analytics/collector.go:142):**
+
+```go
+// sessionHash produces a short hash used only for in-memory session deduplication.
+// It is never written to the database.
+func sessionHash(ip, ua string) string {
+    // FNV-1a — fast, non-cryptographic, sufficient for session keying.
+    const (
+        offset64 uint64 = 14695981039346656037
+        prime64  uint64 = 1099511628211
+    )
+    h := offset64
+    for _, b := range []byte(ip + ua) {
+        h ^= uint64(b)
+        h *= prime64
+    }
+    return fmt.Sprintf("%016x", h)
+}
+```
+
+## Data Collected
+
+### Daily Aggregated Counters (`_analytics`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | text | Page path (e.g., `/docs`, `/about`) |
+| `date` | text | Date in `YYYY-MM-DD` format |
+| `device_type` | text | `desktop`, `mobile`, or `tablet` |
+| `browser` | text | Browser name (e.g., `chrome`, `firefox`) |
+| `views` | number | Total page views for this row |
+| `unique_sessions` | number | Count of new sessions |
+
+**Unique constraint:** `(path, date, device_type, browser)`
+
+### Recent Sessions (`_analytics_sessions`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | text | Page path visited |
+| `device_type` | text | Device classification |
+| `browser` | text | Browser name |
+| `os` | text | Operating system |
+| `timestamp` | datetime | Visit time |
+| `is_new_session` | bool | Whether this was a new session |
+
+**Ring buffer:** Only the 50 most recent records are kept.
+
+## What Is NOT Stored
+
+✅ **PII-free tracking:**
+
+- ❌ No IP addresses
+- ❌ No user agents
+- ❌ No visitor IDs or cookies
+- ❌ No session IDs
+- ❌ No referrer URLs
+- ❌ No query parameters
+- ✅ Only aggregated counts and device metadata
+
+## Device and Browser Detection
+
+From `core/analytics/collector.go:156`:
+
+```go
+func parseUA(userAgent string) (deviceType, browser, os string) {
+    ua := strings.ToLower(userAgent)
+
+    deviceType = "desktop"
+    if strings.Contains(ua, "mobile") || strings.Contains(ua, "android") {
+        deviceType = "mobile"
+    } else if strings.Contains(ua, "tablet") || strings.Contains(ua, "ipad") {
+        deviceType = "tablet"
+    }
+
+    browser = "unknown"
+    switch {
+    case strings.Contains(ua, "chrome") && !strings.Contains(ua, "edg"):
+        browser = "chrome"
+    case strings.Contains(ua, "firefox"):
+        browser = "firefox"
+    case strings.Contains(ua, "safari") && !strings.Contains(ua, "chrome"):
+        browser = "safari"
+    case strings.Contains(ua, "edg"):
+        browser = "edge"
+    case strings.Contains(ua, "opera"):
+        browser = "opera"
+    }
+
+    os = "unknown"
+    switch {
+    case strings.Contains(ua, "windows"):
+        os = "windows"
+    case strings.Contains(ua, "macintosh") || strings.Contains(ua, "mac os"):
+        os = "macos"
+    case strings.Contains(ua, "linux") && !strings.Contains(ua, "android"):
+        os = "linux"
+    case strings.Contains(ua, "iphone"):
+        os = "ios"
+    case strings.Contains(ua, "ipad"):
+        os = "ipados"
+    case strings.Contains(ua, "android"):
+        os = "android"
+    }
+
+    return
+}
+```
+
+## Excluded Paths
+
+From `core/analytics/collector.go:204`:
+
+The following paths are automatically excluded from tracking:
+
+```go
+func shouldExclude(path string) bool {
+    if strings.HasPrefix(path, "/api/") ||
+        strings.HasPrefix(path, "/_/") ||
+        strings.HasPrefix(path, "/_app/immutable/") ||
+        strings.HasPrefix(path, "/.well-known/") {
+        return true
+    }
+
+    switch path {
+    case "/favicon.ico", "/service-worker.js", "/manifest.json", "/robots.txt":
+        return true
+    }
+
+    // Static file extensions (.css, .js, .png, .jpg, etc.)
+    lower := strings.ToLower(path)
+    for _, ext := range staticExtensions {
+        if strings.HasSuffix(lower, ext) {
+            return true
+        }
+    }
+    return false
+}
+```
+
+**Static extensions excluded (core/analytics/collector.go:262):**
+- Images: `.png`, `.jpg`, `.jpeg`, `.gif`, `.svg`, `.ico`, `.webp`, etc.
+- Scripts/Styles: `.css`, `.js`, `.json`, `.map`, `.webmanifest`
+- Media: `.mp4`, `.webm`, `.mp3`, `.wav`, etc.
+- Documents: `.pdf`, `.doc`, `.xls`, `.txt`, etc.
+- Archives: `.zip`, `.rar`, `.7z`, `.tar`, `.gz`
+- Fonts: `.woff`, `.woff2`, `.ttf`, `.eot`, `.otf`
+
+## Bot Filtering
+
+From `core/analytics/collector.go:226`:
+
+```go
+func isBot(ua string) bool {
+    if ua == "" {
+        return true
+    }
+    lower := strings.ToLower(ua)
+    for _, p := range botPatterns {
+        if strings.Contains(lower, p) {
+            return true
+        }
+    }
+    return false
+}
+
+var botPatterns = []string{
+    "bot", "crawler", "spider", "lighthouse", "pagespeed",
+    "prerender", "headless", "pingdom", "slurp", "googlebot",
+    "baiduspider", "bingbot", "yandex", "facebookexternalhit",
+    "ahrefsbot", "semrushbot", "screaming frog",
+}
+```
+
+## Data Retention
+
+### Analytics Counters
+
+From `core/analytics/types.go:7`:
+
+```go
+const (
+    LookbackDays            = 90           // Days to look back for aggregate queries
+    CollectionName          = "_analytics" // Daily aggregated counters
+)
+```
+
+**Retention:** 90 days (cleaned by `__pbExtAnalyticsClean__` system job)
+
+### Session Ring Buffer
+
+From `core/analytics/types.go:10`:
+
+```go
+const (
+    SessionsCollectionName  = "_analytics_sessions" // Recent visit ring buffer
+    SessionRingSize         = 50                    // Max rows kept in _analytics_sessions
+)
+```
+
+**Retention:** Only the 50 most recent visits are kept
+
+## Session Window
+
+From `core/analytics/analytics.go:28`:
+
+```go
+func New(app core.App) *Analytics {
+    return &Analytics{
+        app:           app,
+        knownVisitors: make(map[string]time.Time),
+        sessionWindow: 30 * time.Minute, // Session expires after 30 minutes
+    }
+}
+```
+
+A visitor is considered "new" if their session hash hasn't been seen in the past 30 minutes.
+
+## Analytics Data Structure
+
+From `core/analytics/types.go:14`:
+
+```go
+type Data struct {
+    UniqueVisitors     int     `json:"unique_visitors"`
+    NewVisitors        int     `json:"new_visitors"`
+    ReturningVisitors  int     `json:"returning_visitors"`
+    TotalPageViews     int     `json:"total_page_views"`
+    ViewsPerVisitor    float64 `json:"views_per_visitor"`
+    TodayPageViews     int     `json:"today_page_views"`
+    YesterdayPageViews int     `json:"yesterday_page_views"`
+
+    TopDeviceType       string  `json:"top_device_type"`
+    TopDevicePercentage float64 `json:"top_device_percentage"`
+    DesktopPercentage   float64 `json:"desktop_percentage"`
+    MobilePercentage    float64 `json:"mobile_percentage"`
+    TabletPercentage    float64 `json:"tablet_percentage"`
+
+    TopBrowser       string             `json:"top_browser"`
+    BrowserBreakdown map[string]float64 `json:"browser_breakdown"`
+
+    TopPages []PageStat `json:"top_pages"`
+
+    RecentVisits             []RecentVisit `json:"recent_visits"`
+    RecentVisitCount         int           `json:"recent_visit_count"`
+    HourlyActivityPercentage float64       `json:"hourly_activity_percentage"`
+}
+```
+
+## Session Cleanup
+
+From `core/analytics/analytics.go:47`:
+
+```go
+// sessionCleanupWorker periodically removes expired entries from the in-memory session map.
+func (a *Analytics) sessionCleanupWorker() {
+    ticker := time.NewTicker(a.sessionWindow)
+    defer ticker.Stop()
+
+    for range ticker.C {
+        cutoff := time.Now().Add(-a.sessionWindow)
+        a.visitorsMu.Lock()
+        before := len(a.knownVisitors)
+        for id, t := range a.knownVisitors {
+            if t.Before(cutoff) {
+                delete(a.knownVisitors, id)
+            }
+        }
+        after := len(a.knownVisitors)
+        a.visitorsMu.Unlock()
+
+        if before != after {
+            a.app.Logger().Debug("Cleaned up expired sessions", "removed", before-after, "remaining", after)
+        }
+    }
+}
+```
+
+## Middleware Registration
+
+From `core/analytics/collector.go:15`:
+
+```go
+// RegisterRoutes attaches the request tracking middleware to the router.
+func (a *Analytics) RegisterRoutes(e *core.ServeEvent) {
+    e.Router.BindFunc(func(e *core.RequestEvent) error {
+        path := e.Request.URL.Path
+        if shouldExclude(path) {
+            return e.Next()
+        }
+
+        err := e.Next()
+
+        if !isBot(e.Request.UserAgent()) {
+            a.track(e.Request)
+        }
+
+        return err
+    })
+}
+```
+
+## Dashboard Integration
+
+View analytics in the pb-ext dashboard at `/_/_`:
+
+- Total page views (today vs. yesterday)
+- Unique visitors and session counts
+- Device type breakdown (desktop/mobile/tablet)
+- Browser distribution
+- Top pages by view count
+- Recent visitor activity (last 50 visits)
+- Hourly activity trends
+
+## GDPR Compliance
+
+pb-ext analytics is designed to be GDPR-compliant:
+
+✅ **No consent banner required** — no personal data is stored  
+✅ **No cookies** — tracking is server-side only  
+✅ **No tracking scripts** — no client-side JavaScript  
+✅ **Aggregated data only** — individual visitors cannot be identified  
+✅ **Automatic retention** — old data is automatically purged  
+✅ **Transparent** — all source code is open and auditable  
+
+## Best Practices
+
+1. **Review excluded paths** to ensure admin/API routes aren't tracked
+2. **Monitor session cleanup** to prevent memory growth
+3. **Check bot patterns** if you see unusual traffic
+4. **Use the 90-day window** for trend analysis
+5. **Export data periodically** if you need longer retention
+
+## Custom Analytics Queries
+
+Query the `_analytics` collection directly for custom reports:
+
+```go
+analytics, err := app.FindCollectionByNameOrId("_analytics")
+if err != nil {
+    return err
+}
+
+// Get page views for the last 7 days
+sevenDaysAgo := time.Now().AddDate(0, 0, -7).Format("2006-01-02")
+records, err := app.FindRecordsByFilter(analytics,
+    "date >= {:cutoff}",
+    "-date",
+    100, 0,
+    map[string]any{"cutoff": sevenDaysAgo},
+)
+```
+
+## Related
+
+- [Monitoring](/features/monitoring) - System metrics tracking
+- [Dashboard](/features/dashboard) - View analytics UI
+- [Cron Jobs](/features/cron-jobs) - Analytics cleanup job

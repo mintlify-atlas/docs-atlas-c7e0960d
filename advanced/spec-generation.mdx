@@ -1,0 +1,420 @@
+---
+title: Spec Generation
+description: Build-time OpenAPI spec generation and validation for production deployments
+---
+
+# Spec Generation
+
+pb-ext supports both **runtime** and **build-time** OpenAPI spec generation. For production deployments, specs should be generated during the build process and read from disk at runtime for optimal performance.
+
+## Dev vs Production
+
+### Development Mode
+
+- **No disk specs** — specs are generated at runtime via AST parsing
+- Specs regenerate on server restart (picks up code changes)
+- Slightly slower startup due to AST analysis
+- No build toolchain required
+
+**Command**:
+```bash
+pb-cli
+# or
+pb-cli --run-only
+```
+
+### Production Mode
+
+- **Specs generated at build time** and copied to `dist/specs/`
+- Binary reads specs from disk at runtime
+- Fast startup (no AST parsing)
+- Specs are validated during build
+- Generated specs are version-controlled
+
+**Command**:
+```bash
+pb-cli --production
+```
+
+This generates specs to `dist/specs/` and bundles them with the final binary.
+
+## Build Pipeline Integration
+
+The `pb-cli` toolchain automatically runs OpenAPI generation for production builds:
+
+```bash
+pb-cli              # Development mode (no spec generation)
+pb-cli --build-only # Build frontend + generate specs
+pb-cli --production # Full production build with specs
+```
+
+### What Happens During Build
+
+1. Frontend build (if applicable)
+2. **Spec generation**: `--generate-specs-dir=dist/specs`
+3. **Spec validation**: Ensures all required fields present
+4. Go build with specs copied to final artifact
+
+## Programmatic Generation
+
+Generate specs from your own code:
+
+### Using SpecGenerator
+
+```go
+package main
+
+import (
+    "log"
+    app "github.com/magooney-loon/pb-ext/core"
+)
+
+func main() {
+    // Option 1: Use initializer (recommended)
+    gen := app.NewSpecGeneratorWithInitializer(func() (*app.APIVersionManager, error) {
+        return initVersionedSystem(), nil
+    })
+    
+    if err := gen.Generate("dist/specs/", ""); err != nil {
+        log.Fatal(err)
+    }
+}
+
+func initVersionedSystem() *app.APIVersionManager {
+    // Your version setup
+    v1Config := &app.APIDocsConfig{
+        Title:       "My API",
+        Description: "API Documentation",
+        Version:     "1.0.0",
+    }
+    
+    return app.InitializeVersionedSystemWithRoutes(map[string]*app.VersionSetup{
+        "v1": {
+            Config: v1Config,
+            Routes: registerV1Routes,
+        },
+    }, "v1")
+}
+```
+
+### From main.go
+
+The typical pattern in `cmd/server/main.go`:
+
+```go
+func main() {
+    generateSpecsDir := flag.String("generate-specs-dir", "", "Generate OpenAPI specs into the provided directory and exit")
+    generateSpecVersion := flag.String("generate-spec-version", "", "Optional API version to generate (requires --generate-specs-dir)")
+    flag.Parse()
+
+    if *generateSpecsDir != "" {
+        gen := app.NewSpecGeneratorWithInitializer(func() (*app.APIVersionManager, error) {
+            return initVersionedSystem(), nil
+        })
+        if err := gen.Generate(*generateSpecsDir, *generateSpecVersion); err != nil {
+            log.Fatal(err)
+        }
+        return
+    }
+
+    // Normal server startup...
+}
+```
+
+**Usage**:
+```bash
+# Generate all versions
+go run cmd/server/main.go --generate-specs-dir=dist/specs
+
+# Generate single version
+go run cmd/server/main.go --generate-specs-dir=dist/specs --generate-spec-version=v1
+```
+
+## Validation
+
+### ValidateSpecs
+
+Validate generated specs to ensure they're valid OpenAPI 3.0:
+
+```go
+if err := api.ValidateSpecs("dist/specs/", []string{"v1", "v2"}); err != nil {
+    log.Fatal(err)
+}
+```
+
+**Checks**:
+- File exists and is readable JSON
+- Required fields present: `openapi`, `info`, `info.title`, `info.version`, `paths`
+- Filename matches version (e.g., `v1.json` for version `v1`)
+
+### ValidateSpecFile
+
+Validate a single spec file:
+
+```go
+if err := api.ValidateSpecFile("dist/specs/v1.json", "v1"); err != nil {
+    log.Fatal(err)
+}
+```
+
+### From main.go
+
+```go
+func main() {
+    validateSpecsDir := flag.String("validate-specs-dir", "", "Validate OpenAPI specs from the provided directory and exit")
+    flag.Parse()
+
+    if *validateSpecsDir != "" {
+        gen := app.NewSpecGeneratorWithInitializer(func() (*app.APIVersionManager, error) {
+            return initVersionedSystem(), nil
+        })
+        if err := gen.Validate(*validateSpecsDir); err != nil {
+            log.Fatal(err)
+        }
+        return
+    }
+
+    // Normal server startup...
+}
+```
+
+**Usage**:
+```bash
+go run cmd/server/main.go --validate-specs-dir=dist/specs
+```
+
+## Generated Spec Location
+
+Specs are written to the output directory with version-based filenames:
+
+```
+dist/specs/
+├── v1.json
+├── v2.json
+└── v3.json
+```
+
+Each file contains the full OpenAPI 3.0.3 spec for that version, including:
+- All paths and operations
+- Component schemas (structs)
+- Parameters, request bodies, responses
+- Security requirements
+- API metadata (title, description, contact, license)
+
+## Runtime Spec Loading
+
+At runtime, pb-ext follows this **source selection policy**:
+
+1. If `PB_EXT_OPENAPI_SPECS_DIR` env var is set, read from that directory
+2. Otherwise, read from `dist/specs/` relative to the binary
+3. If no specs found on disk, fall back to runtime AST generation (dev mode)
+
+### Environment Variables
+
+**`PB_EXT_OPENAPI_SPECS_DIR`**: Override spec directory
+```bash
+export PB_EXT_OPENAPI_SPECS_DIR=/custom/path/specs
+./myserver
+```
+
+**`PB_EXT_DISABLE_OPENAPI_SPECS`**: Force runtime generation (ignore disk)
+```bash
+export PB_EXT_DISABLE_OPENAPI_SPECS=1
+./myserver
+```
+
+## Caching and Deep Copy
+
+**Caching**: Parsed specs are cached per version in memory after first load.
+
+**Deep Copy**: Returned specs are deep-copied to avoid mutation leaks across requests. This ensures concurrent Swagger UI requests don't interfere with each other.
+
+## Integration with APIVersionManager
+
+The `APIVersionManager` coordinates spec loading:
+
+```go
+vm := api.InitializeVersionedSystem(configs, "v1")
+
+// Get registry for version
+registry, err := vm.GetVersionRegistry("v1")
+
+// Get OpenAPI spec with components
+docs := registry.GetDocsWithComponents()
+```
+
+**Lookup order**:
+1. Check if disk spec exists via `HasEmbeddedSpec(version)`
+2. If yes, load via `GetEmbeddedSpec(version)` (cached)
+3. If no, fall back to runtime `GenerateComponentSchemas()` via AST
+
+## Testing Spec Generation
+
+Create a test that generates and validates specs:
+
+```go
+func TestSpecGeneration(t *testing.T) {
+    tmpDir := t.TempDir()
+    
+    gen := app.NewSpecGeneratorWithInitializer(func() (*app.APIVersionManager, error) {
+        return initVersionedSystem(), nil
+    })
+    
+    // Generate specs
+    if err := gen.Generate(tmpDir, ""); err != nil {
+        t.Fatalf("spec generation failed: %v", err)
+    }
+    
+    // Validate generated specs
+    if err := gen.Validate(tmpDir); err != nil {
+        t.Fatalf("spec validation failed: %v", err)
+    }
+    
+    // Check files exist
+    v1Path := filepath.Join(tmpDir, "v1.json")
+    if _, err := os.Stat(v1Path); os.IsNotExist(err) {
+        t.Fatal("v1.json not generated")
+    }
+}
+```
+
+## CI/CD Integration
+
+### GitHub Actions
+
+```yaml
+name: Build
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+      
+      - name: Install pb-cli
+        run: go install github.com/magooney-loon/pb-ext/cmd/pb-cli@latest
+      
+      - name: Generate OpenAPI specs
+        run: go run cmd/server/main.go --generate-specs-dir=dist/specs
+      
+      - name: Validate specs
+        run: go run cmd/server/main.go --validate-specs-dir=dist/specs
+      
+      - name: Build production binary
+        run: pb-cli --production
+```
+
+### Makefile
+
+```makefile
+.PHONY: specs
+specs:
+	go run cmd/server/main.go --generate-specs-dir=dist/specs
+
+.PHONY: validate-specs
+validate-specs:
+	go run cmd/server/main.go --validate-specs-dir=dist/specs
+
+.PHONY: build
+build: specs validate-specs
+	pb-cli --production
+```
+
+## Spec Format
+
+Generated specs follow **OpenAPI 3.0.3** format:
+
+```json
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "My API",
+    "version": "1.0.0",
+    "description": "API Documentation",
+    "contact": { ... },
+    "license": { ... }
+  },
+  "paths": {
+    "/api/v1/todos": {
+      "get": { ... },
+      "post": { ... }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreateTodoRequest": { ... },
+      "Todo": { ... }
+    },
+    "securitySchemes": { ... }
+  }
+}
+```
+
+## Common Issues
+
+### Missing Specs in Production
+
+**Problem**: Server falls back to runtime AST parsing in production.
+
+**Solution**: Ensure specs are copied to the correct location:
+```bash
+# Check spec files exist
+ls -la dist/specs/
+
+# Verify env var if using custom path
+echo $PB_EXT_OPENAPI_SPECS_DIR
+```
+
+### Validation Failures
+
+**Problem**: `ValidateSpecs` fails with missing required field.
+
+**Solution**: Check your `APIDocsConfig` has all required fields:
+```go
+config := &api.APIDocsConfig{
+    Title:       "My API",     // required
+    Description: "Docs",        // required
+    Version:     "1.0.0",       // required
+    BaseURL:     "http://...",  // required
+}
+```
+
+### Stale Specs
+
+**Problem**: OpenAPI docs don't reflect recent code changes.
+
+**Solution**: Regenerate specs:
+```bash
+rm -rf dist/specs
+pb-cli --build-only
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Version-Control Specs" icon="code-branch">
+    Commit generated specs to Git so reviewers can see API changes in PRs.
+  </Card>
+  <Card title="Validate in CI" icon="check-circle">
+    Run `--validate-specs-dir` in CI to catch invalid specs before deployment.
+  </Card>
+  <Card title="Use Build Flag" icon="flag">
+    Always use `pb-cli --production` for prod builds to ensure specs are bundled.
+  </Card>
+  <Card title="Cache Busting" icon="rotate">
+    If specs don't update, clear cache: `rm -rf dist/specs && pb-cli --build-only`
+  </Card>
+</CardGroup>
+
+## Further Reading
+
+- [AST Parsing](/advanced/ast-parsing) - How specs are generated from code
+- [Reserved Routes](/advanced/reserved-routes) - API docs routes
+- [Middleware](/advanced/middleware) - Request/response middleware patterns

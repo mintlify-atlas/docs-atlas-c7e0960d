@@ -1,0 +1,490 @@
+---
+title: 'Environment Configuration'
+description: 'Configure ports, data directories, and environment variables for pb-ext'
+---
+
+## Environment Overview
+
+pb-ext inherits PocketBase's configuration system and adds pb-ext-specific settings. Configuration can be set via environment variables, command-line flags, or programmatically in code.
+
+## Port Configuration
+
+### Default Port
+
+pb-ext runs on port **8090** by default:
+
+```bash
+# Starts on http://127.0.0.1:8090
+./pb-ext serve
+```
+
+### Custom Port via Command Line
+
+Use the `--http` flag to specify a custom port:
+
+```bash
+# Custom port
+./pb-ext serve --http=127.0.0.1:9090
+
+# Listen on all interfaces
+./pb-ext serve --http=0.0.0.0:8090
+
+# Custom host and port
+./pb-ext serve --http=192.168.1.100:3000
+```
+
+<ParamField path="--http" type="string" default="127.0.0.1:8090">
+  HTTP server address and port (`host:port`)
+</ParamField>
+
+### Programmatic Port Configuration
+
+Set the port in code using `os.Args`:
+
+```go
+package main
+
+import (
+    "os"
+    app "github.com/magooney-loon/pb-ext/core"
+)
+
+func main() {
+    // Set custom port before server initialization
+    os.Args = []string{"app", "serve", "--http=127.0.0.1:9090"}
+    
+    srv := app.New()
+    // ... rest of setup
+}
+```
+
+### Environment Variable
+
+Set via environment variable:
+
+```bash
+export PB_HTTP="127.0.0.1:9090"
+./pb-ext serve
+```
+
+## Data Directory
+
+### Default Data Directory
+
+By default, PocketBase stores all data in `pb_data/`:
+
+```
+pb_data/
+├── data.db              # Main SQLite database
+├── logs.db              # Request logs
+├── backups/             # Automatic backups
+└── storage/             # File uploads
+```
+
+### Custom Data Directory via Flag
+
+```bash
+./pb-ext serve --dir=/var/lib/pb-ext/data
+```
+
+### Programmatic Configuration
+
+Configure the data directory in code:
+
+```go
+package main
+
+import (
+    app "github.com/magooney-loon/pb-ext/core"
+    "github.com/pocketbase/pocketbase"
+)
+
+func main() {
+    // Option 1: Custom PocketBase config
+    pbConfig := &pocketbase.Config{
+        DefaultDataDir: "./custom_pb_data",
+    }
+    srv := app.New(app.WithConfig(pbConfig))
+    
+    // ... rest of setup
+}
+```
+
+<Warning>
+  Ensure the data directory has proper permissions (0755 for directory, 0600 for database file) and sufficient disk space.
+</Warning>
+
+## Developer Mode vs Normal Mode
+
+pb-ext can run in two modes that affect behavior and security settings.
+
+### Developer Mode
+
+Enables development features and relaxed security:
+
+```go
+srv := app.New(app.InDeveloperMode())
+```
+
+**Command line:**
+```bash
+go run ./cmd/server --dev serve
+```
+
+**Features:**
+- Verbose logging
+- Runtime OpenAPI spec generation via AST parsing
+- Auto-migration of schema changes
+- CORS headers relaxed for `localhost`
+- Admin UI accessible without HTTPS
+
+<Warning>
+  **Never use developer mode in production.** It disables important security features.
+</Warning>
+
+### Normal Mode (Production)
+
+Production-ready configuration:
+
+```go
+srv := app.New(app.InNormalMode())
+```
+
+**Features:**
+- Structured logging only
+- OpenAPI specs read from disk (`specs/` directory)
+- CORS restrictions enforced
+- Requires HTTPS for admin UI (recommended)
+- Security headers enabled
+
+## Database Configuration
+
+### Database File Location
+
+The main database file:
+
+```
+pb_data/data.db
+```
+
+### Connection Pool Settings
+
+PocketBase uses SQLite with WAL mode enabled by default for better concurrency:
+
+```go
+// Custom database configuration (advanced)
+pbConfig := &pocketbase.Config{
+    DefaultDataDir: "./pb_data",
+}
+srv := app.New(app.WithConfig(pbConfig))
+```
+
+### Database Backups
+
+Automatic backups are stored in:
+
+```
+pb_data/backups/
+```
+
+Backups are created:
+- Before schema migrations
+- On demand via admin UI
+- Via cron job (if configured)
+
+## Logs and Persistent Storage
+
+### Application Logs
+
+Structured logs are written to:
+
+```
+pb_data/logs.db
+```
+
+**Access logs via SQL:**
+```sql
+SELECT * FROM _logs 
+ORDER BY created DESC 
+LIMIT 100;
+```
+
+### pb-ext System Logs
+
+pb-ext creates these collections for operational data:
+
+| Collection | Purpose | Retention |
+|------------|---------|----------|
+| `_analytics` | Page view analytics | 90 days |
+| `_analytics_sessions` | Recent 50 visits | Ring buffer |
+| `_job_logs` | Cron job execution logs | 72 hours |
+
+### Log Rotation
+
+For systemd deployments, use journald for log management:
+
+```ini
+[Service]
+StandardOutput=journal
+StandardError=journal
+```
+
+**View logs:**
+```bash
+sudo journalctl -u pb-ext -f
+```
+
+## Environment Variables
+
+Common environment variables for pb-ext:
+
+<ParamField path="PB_HTTP" type="string" default="127.0.0.1:8090">
+  HTTP server address
+</ParamField>
+
+<ParamField path="PB_DATA_DIR" type="string" default="./pb_data">
+  Data directory path
+</ParamField>
+
+<ParamField path="PB_DEV" type="boolean" default={false}>
+  Enable developer mode
+</ParamField>
+
+<ParamField path="PB_ENCRYPTION_KEY" type="string">
+  32-character key for encrypting sensitive fields
+</ParamField>
+
+<ParamField path="PB_ADMIN_EMAIL" type="string">
+  Default admin email (first-run setup)
+</ParamField>
+
+<ParamField path="PB_ADMIN_PASSWORD" type="string">
+  Default admin password (first-run setup)
+</ParamField>
+
+### Example .env File
+
+```bash
+# Server configuration
+PB_HTTP=127.0.0.1:8090
+PB_DATA_DIR=/var/lib/pb-ext/data
+
+# Security
+PB_ENCRYPTION_KEY=your-32-character-encryption-key-here
+
+# Admin setup (first run only)
+PB_ADMIN_EMAIL=admin@example.com
+PB_ADMIN_PASSWORD=secure-password-here
+
+# Optional: External services
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USERNAME=user@example.com
+SMTP_PASSWORD=smtp-password
+```
+
+<Info>
+  Load environment variables using a package like [godotenv](https://github.com/joho/godotenv) or via systemd service configuration.
+</Info>
+
+## Docker Configuration
+
+### Dockerfile Example
+
+```dockerfile
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source
+COPY . .
+
+# Build binary
+RUN go build -ldflags="-s -w" -o pb-ext ./cmd/server
+
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+
+# Copy binary and static files
+COPY --from=builder /app/pb-ext .
+COPY --from=builder /app/pb_public ./pb_public
+
+# Create data directory
+RUN mkdir -p /app/pb_data
+
+# Expose port
+EXPOSE 8090
+
+# Run as non-root
+RUN adduser -D -u 1000 pbext
+RUN chown -R pbext:pbext /app
+USER pbext
+
+CMD ["./pb-ext", "serve", "--http=0.0.0.0:8090"]
+```
+
+### Docker Compose
+
+```yaml
+version: '3.8'
+
+services:
+  pb-ext:
+    build: .
+    ports:
+      - "8090:8090"
+    environment:
+      - PB_HTTP=0.0.0.0:8090
+      - PB_ENCRYPTION_KEY=${PB_ENCRYPTION_KEY}
+    volumes:
+      - pb_data:/app/pb_data
+    restart: unless-stopped
+
+volumes:
+  pb_data:
+```
+
+### Running with Docker
+
+```bash
+# Build image
+docker build -t pb-ext .
+
+# Run container
+docker run -d \
+  -p 8090:8090 \
+  -v pb_data:/app/pb_data \
+  -e PB_ENCRYPTION_KEY="your-key-here" \
+  --name pb-ext \
+  pb-ext
+
+# View logs
+docker logs -f pb-ext
+```
+
+## Configuration Precedence
+
+Settings are applied in this order (later overrides earlier):
+
+1. **Default values** (hardcoded in PocketBase/pb-ext)
+2. **Environment variables** (`PB_*`)
+3. **Command-line flags** (`--http`, `--dir`, etc.)
+4. **Programmatic configuration** (`WithConfig`, `os.Args`)
+
+## Security Considerations
+
+<AccordionGroup>
+  <Accordion title="File Permissions">
+    Set restrictive permissions on sensitive files:
+    ```bash
+    chmod 600 pb_data/data.db
+    chmod 700 pb_data/
+    ```
+  </Accordion>
+
+  <Accordion title="Encryption Key">
+    Generate a secure encryption key:
+    ```bash
+    openssl rand -base64 32
+    ```
+    Store securely (environment variable or secrets manager).
+  </Accordion>
+
+  <Accordion title="Network Binding">
+    - Development: `127.0.0.1:8090` (localhost only)
+    - Production: Use reverse proxy (Nginx/Caddy)
+    - Docker: `0.0.0.0:8090` inside container, map externally
+  </Accordion>
+
+  <Accordion title="Admin Access">
+    - Use strong admin passwords
+    - Enable 2FA for admin accounts
+    - Restrict admin panel to VPN or trusted IPs
+    - Use HTTPS in production
+  </Accordion>
+</AccordionGroup>
+
+## Monitoring Configuration
+
+### Health Checks
+
+Configure health check endpoints:
+
+```bash
+# Check server status
+curl http://localhost:8090/_/
+
+# pb-ext dashboard
+curl http://localhost:8090/_/_
+```
+
+### Metrics Collection
+
+pb-ext automatically collects system metrics:
+
+- CPU usage
+- Memory usage
+- Disk space
+- Network I/O
+- Request statistics
+- Active connections
+
+Access via the dashboard at `http://localhost:8090/_/_`
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Port already in use">
+    **Error**: `bind: address already in use`
+    
+    **Solution**:
+    ```bash
+    # Find process using port 8090
+    lsof -i :8090
+    
+    # Kill process or use different port
+    ./pb-ext serve --http=127.0.0.1:9090
+    ```
+  </Accordion>
+
+  <Accordion title="Permission denied on data directory">
+    **Error**: `failed to open database: unable to open database file`
+    
+    **Solution**:
+    ```bash
+    # Create directory with proper permissions
+    mkdir -p pb_data
+    chmod 755 pb_data
+    
+    # If running as service, ensure correct owner
+    sudo chown -R pbext:pbext /var/lib/pb-ext
+    ```
+  </Accordion>
+
+  <Accordion title="Database locked errors">
+    **Cause**: Multiple instances accessing same database or stale lock.
+    
+    **Solution**:
+    - Ensure only one instance is running
+    - Remove stale lock: `rm pb_data/data.db-wal`
+    - Check file permissions
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Production Deployment" icon="rocket" href="/deployment/production">
+    Deploy to production with automated tools
+  </Card>
+  <Card title="Frontend Configuration" icon="browser" href="/deployment/frontend">
+    Set up SvelteKit and static file serving
+  </Card>
+</CardGroup>

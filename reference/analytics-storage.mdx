@@ -1,0 +1,500 @@
+---
+title: Analytics Storage
+description: Data retrieval and aggregation from analytics collections
+---
+
+## Overview
+
+The analytics storage system retrieves and aggregates data from the `_analytics` and `_analytics_sessions` collections using SQL queries. All aggregation happens in SQLite - no records are loaded into Go memory.
+
+## Type Definition
+
+```go
+type Data struct {
+    UniqueVisitors     int     `json:"unique_visitors"`
+    NewVisitors        int     `json:"new_visitors"`
+    ReturningVisitors  int     `json:"returning_visitors"`
+    TotalPageViews     int     `json:"total_page_views"`
+    ViewsPerVisitor    float64 `json:"views_per_visitor"`
+    TodayPageViews     int     `json:"today_page_views"`
+    YesterdayPageViews int     `json:"yesterday_page_views"`
+
+    TopDeviceType       string  `json:"top_device_type"`
+    TopDevicePercentage float64 `json:"top_device_percentage"`
+    DesktopPercentage   float64 `json:"desktop_percentage"`
+    MobilePercentage    float64 `json:"mobile_percentage"`
+    TabletPercentage    float64 `json:"tablet_percentage"`
+
+    TopBrowser       string             `json:"top_browser"`
+    BrowserBreakdown map[string]float64 `json:"browser_breakdown"`
+
+    TopPages []PageStat `json:"top_pages"`
+
+    RecentVisits             []RecentVisit `json:"recent_visits"`
+    RecentVisitCount         int           `json:"recent_visit_count"`
+    HourlyActivityPercentage float64       `json:"hourly_activity_percentage"`
+}
+```
+
+**Location:** `core/analytics/types.go:15`
+
+## Data Retrieval
+
+### GetData
+
+```go
+func (a *Analytics) GetData() (*Data, error)
+```
+
+Computes aggregated analytics from the two collections via SQL.
+
+**Returns:**
+- `*Data` - Aggregated analytics data
+- `error` - Error if queries fail
+
+**Location:** `core/analytics/storage.go:12`
+
+**Query Strategy:**
+1. All aggregation happens in SQLite
+2. No records loaded into Go memory
+3. Uses `COALESCE` for null safety
+4. Groups and sums efficiently
+5. Returns defaults if collections don't exist
+
+**Example:**
+```go
+analytics, _ := analytics.Initialize(app)
+data, err := analytics.GetData()
+if err != nil {
+    return err
+}
+
+fmt.Printf("Total page views: %d\n", data.TotalPageViews)
+fmt.Printf("Unique visitors: %d\n", data.UniqueVisitors)
+```
+
+### DefaultData
+
+```go
+func DefaultData() *Data
+```
+
+Returns a zero-value Data struct for when no records exist.
+
+**Location:** `core/analytics/types.go:57`
+
+## Supporting Types
+
+### PageStat
+
+```go
+type PageStat struct {
+    Path  string `json:"path"`
+    Views int    `json:"views"`
+}
+```
+
+Holds view counts for a single path.
+
+**Location:** `core/analytics/types.go:42`
+
+### RecentVisit
+
+```go
+type RecentVisit struct {
+    Time       time.Time `json:"time"`
+    Path       string    `json:"path"`
+    DeviceType string    `json:"device_type"`
+    Browser    string    `json:"browser"`
+    OS         string    `json:"os"`
+}
+```
+
+A single entry for recent visitors display.
+
+**Location:** `core/analytics/types.go:48`
+
+## Aggregation Queries
+
+### Total Views and Sessions
+
+```sql
+SELECT 
+    COALESCE(SUM(views), 0),
+    COALESCE(SUM(unique_sessions), 0)
+FROM _analytics
+```
+
+**Location:** `core/analytics/storage.go:31`
+
+### Today and Yesterday Views
+
+```sql
+-- Today
+SELECT COALESCE(SUM(views), 0)
+FROM _analytics
+WHERE date = '2024-03-04'
+
+-- Yesterday
+SELECT COALESCE(SUM(views), 0)
+FROM _analytics
+WHERE date = '2024-03-03'
+```
+
+**Location:** `core/analytics/storage.go:43`
+
+### New vs Returning Visitors
+
+```sql
+SELECT 
+    COALESCE(SUM(CASE WHEN is_new_session THEN 1 ELSE 0 END), 0) AS new_sessions,
+    COALESCE(SUM(CASE WHEN is_new_session THEN 0 ELSE 1 END), 0) AS returning_sessions
+FROM _analytics_sessions
+```
+
+**Location:** `core/analytics/storage.go:59`
+
+### Device Breakdown
+
+```sql
+SELECT device_type, SUM(views) AS views
+FROM _analytics
+GROUP BY device_type
+```
+
+**Location:** `core/analytics/storage.go:77`
+
+### Browser Breakdown (Top 5)
+
+```sql
+SELECT browser, SUM(views) AS views
+FROM _analytics
+GROUP BY browser
+ORDER BY views DESC
+LIMIT 5
+```
+
+**Location:** `core/analytics/storage.go:110`
+
+### Top Pages (Top 10)
+
+```sql
+SELECT path, SUM(views) AS views
+FROM _analytics
+GROUP BY path
+ORDER BY views DESC
+LIMIT 10
+```
+
+**Location:** `core/analytics/storage.go:142`
+
+### Recent Visits (Last 3)
+
+```sql
+SELECT path, device_type, browser, os, timestamp
+FROM _analytics_sessions
+ORDER BY created DESC
+LIMIT 3
+```
+
+**Location:** `core/analytics/storage.go:167`
+
+### Hourly Activity
+
+```sql
+SELECT COUNT(*)
+FROM _analytics_sessions
+WHERE timestamp >= '2024-03-04 11:00:00.000Z'
+```
+
+**Location:** `core/analytics/storage.go:190`
+
+## Calculated Metrics
+
+### Views Per Visitor
+
+```go
+if totalSessions > 0 {
+    data.ViewsPerVisitor = float64(totalViews) / float64(totalSessions)
+}
+```
+
+**Location:** `core/analytics/storage.go:68`
+
+### Device Percentages
+
+```go
+if deviceTotal > 0 {
+    data.DesktopPercentage = float64(deviceMap["desktop"]) / float64(deviceTotal) * 100
+    data.MobilePercentage = float64(deviceMap["mobile"]) / float64(deviceTotal) * 100
+    data.TabletPercentage = float64(deviceMap["tablet"]) / float64(deviceTotal) * 100
+}
+```
+
+**Location:** `core/analytics/storage.go:91`
+
+### Browser Percentages
+
+```go
+for _, r := range browserRows {
+    if browserTotal > 0 {
+        data.BrowserBreakdown[r.Browser] = math.Round(
+            float64(r.Views) / float64(browserTotal) * 100
+        )
+    }
+}
+```
+
+**Location:** `core/analytics/storage.go:126`
+
+### Hourly Activity Percentage
+
+```go
+data.HourlyActivityPercentage = math.Min(
+    100,
+    float64(hourlyCount) / float64(MaxExpectedHourlyVisits) * 100,
+)
+```
+
+**Location:** `core/analytics/storage.go:199`
+
+## Complete Examples
+
+### Dashboard Handler
+
+```go
+func analyticsHandler(e *core.RequestEvent) error {
+    a := getAnalytics() // Global analytics instance
+    
+    data, err := a.GetData()
+    if err != nil {
+        return e.JSON(500, map[string]string{
+            "error": "Failed to retrieve analytics",
+        })
+    }
+    
+    return e.JSON(200, data)
+}
+```
+
+### Custom Report
+
+```go
+func generateWeeklyReport(a *analytics.Analytics) error {
+    data, err := a.GetData()
+    if err != nil {
+        return err
+    }
+    
+    report := WeeklyReport{
+        Period:         "Week of " + time.Now().Format("2006-01-02"),
+        TotalViews:     data.TotalPageViews,
+        UniqueVisitors: data.UniqueVisitors,
+        TopPages:       data.TopPages[:5], // Top 5 only
+        Devices: map[string]float64{
+            "desktop": data.DesktopPercentage,
+            "mobile":  data.MobilePercentage,
+            "tablet":  data.TabletPercentage,
+        },
+    }
+    
+    return sendReportEmail(report)
+}
+```
+
+### Conditional Dashboard Tile
+
+```go
+func renderDashboard(w http.ResponseWriter, a *analytics.Analytics) error {
+    data, err := a.GetData()
+    if err != nil {
+        data = analytics.DefaultData()
+    }
+    
+    tiles := []Tile{
+        {Title: "Total Views", Value: data.TotalPageViews},
+        {Title: "Unique Visitors", Value: data.UniqueVisitors},
+    }
+    
+    // Only show growth if we have yesterday's data
+    if data.YesterdayPageViews > 0 {
+        growth := float64(data.TodayPageViews-data.YesterdayPageViews) /
+            float64(data.YesterdayPageViews) * 100
+        tiles = append(tiles, Tile{
+            Title: "Growth",
+            Value: fmt.Sprintf("%.1f%%", growth),
+        })
+    }
+    
+    return renderTemplate(w, "dashboard", tiles)
+}
+```
+
+### Export to CSV
+
+```go
+func exportAnalyticsCSV(a *analytics.Analytics, w io.Writer) error {
+    data, err := a.GetData()
+    if err != nil {
+        return err
+    }
+    
+    csvWriter := csv.NewWriter(w)
+    defer csvWriter.Flush()
+    
+    // Header
+    csvWriter.Write([]string{"Metric", "Value"})
+    
+    // Overview
+    csvWriter.Write([]string{"Total Page Views", strconv.Itoa(data.TotalPageViews)})
+    csvWriter.Write([]string{"Unique Visitors", strconv.Itoa(data.UniqueVisitors)})
+    csvWriter.Write([]string{"New Visitors", strconv.Itoa(data.NewVisitors)})
+    csvWriter.Write([]string{"Returning Visitors", strconv.Itoa(data.ReturningVisitors)})
+    
+    // Devices
+    csvWriter.Write([]string{"Desktop %", fmt.Sprintf("%.1f", data.DesktopPercentage)})
+    csvWriter.Write([]string{"Mobile %", fmt.Sprintf("%.1f", data.MobilePercentage)})
+    csvWriter.Write([]string{"Tablet %", fmt.Sprintf("%.1f", data.TabletPercentage)})
+    
+    // Top pages
+    csvWriter.Write([]string{"", ""})
+    csvWriter.Write([]string{"Path", "Views"})
+    for _, page := range data.TopPages {
+        csvWriter.Write([]string{page.Path, strconv.Itoa(page.Views)})
+    }
+    
+    return nil
+}
+```
+
+### Comparison Query
+
+```go
+func compareThisWeekToLastWeek(app core.App) (map[string]interface{}, error) {
+    thisWeekStart := startOfWeek(time.Now())
+    lastWeekStart := thisWeekStart.AddDate(0, 0, -7)
+    
+    var thisWeekViews, lastWeekViews int
+    
+    // This week
+    err := app.DB().
+        Select("COALESCE(SUM(views), 0)").
+        From("_analytics").
+        Where(dbx.NewExp("date >= {:start}", dbx.Params{
+            "start": thisWeekStart.Format("2006-01-02"),
+        })).
+        Row(&thisWeekViews)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Last week
+    err = app.DB().
+        Select("COALESCE(SUM(views), 0)").
+        From("_analytics").
+        Where(dbx.NewExp("date >= {:start} AND date < {:end}", dbx.Params{
+            "start": lastWeekStart.Format("2006-01-02"),
+            "end":   thisWeekStart.Format("2006-01-02"),
+        })).
+        Row(&lastWeekViews)
+    if err != nil {
+        return nil, err
+    }
+    
+    change := 0.0
+    if lastWeekViews > 0 {
+        change = float64(thisWeekViews-lastWeekViews) / float64(lastWeekViews) * 100
+    }
+    
+    return map[string]interface{}{
+        "this_week":  thisWeekViews,
+        "last_week":  lastWeekViews,
+        "change_pct": change,
+    }, nil
+}
+```
+
+## Performance Considerations
+
+### Query Optimization
+
+1. **Database Indexes**: Analytics collections have indexes on commonly queried fields
+2. **Aggregation in SQLite**: All `SUM()`, `COUNT()`, `GROUP BY` happens in the database
+3. **No Memory Loading**: Individual records never loaded into Go memory
+4. **Ring Buffer**: `_analytics_sessions` limited to 50 rows (constant size)
+
+### Caching Strategy
+
+```go
+type CachedAnalytics struct {
+    data      *analytics.Data
+    timestamp time.Time
+    mu        sync.RWMutex
+}
+
+func (ca *CachedAnalytics) Get(a *analytics.Analytics) (*analytics.Data, error) {
+    ca.mu.RLock()
+    if time.Since(ca.timestamp) < 5*time.Minute && ca.data != nil {
+        defer ca.mu.RUnlock()
+        return ca.data, nil
+    }
+    ca.mu.RUnlock()
+    
+    ca.mu.Lock()
+    defer ca.mu.Unlock()
+    
+    // Double-check after acquiring write lock
+    if time.Since(ca.timestamp) < 5*time.Minute && ca.data != nil {
+        return ca.data, nil
+    }
+    
+    data, err := a.GetData()
+    if err != nil {
+        return nil, err
+    }
+    
+    ca.data = data
+    ca.timestamp = time.Now()
+    return data, nil
+}
+```
+
+## Data Retention
+
+The `__pbExtAnalyticsClean__` system job automatically deletes analytics older than 90 days:
+
+```sql
+DELETE FROM _analytics WHERE date < '2023-12-05'
+```
+
+**Schedule:** Daily at 3 AM
+
+**Location:** `core/jobs/manager.go:354`
+
+## Constants
+
+```go
+const (
+    LookbackDays            = 90   // Days to look back for queries
+    MaxExpectedHourlyVisits = 100  // Denominator for hourly % calculation
+    SessionRingSize         = 50   // Max rows in _analytics_sessions
+)
+```
+
+**Location:** `core/analytics/types.go:6`
+
+## Best Practices
+
+1. **Cache Results**: Cache `GetData()` results for 5-10 minutes in production
+2. **Error Handling**: Return `DefaultData()` on errors for graceful degradation
+3. **Query Timeouts**: Use context timeouts for long-running analytics queries
+4. **Date Formatting**: Always use `"2006-01-02"` format for date comparisons
+5. **Null Safety**: Always use `COALESCE` in SQL queries
+6. **Custom Reports**: Query `_analytics` directly for custom time ranges
+7. **Performance**: Monitor query performance as data grows
+
+## Related
+
+- [Analytics Collector](/reference/analytics-collector) - Data collection system
+- [Analytics Dashboard](/features/dashboard) - Viewing analytics in the UI
+- [Database Schema](/advanced/reserved-collections) - Collection structure

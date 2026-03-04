@@ -1,0 +1,367 @@
+---
+title: 'Frontend Deployment'
+description: 'Configure and deploy SvelteKit frontends with pb-ext'
+---
+
+## Frontend Architecture
+
+pb-ext serves static files from the `pb_public/` directory, making it compatible with any static site generator. The recommended approach is SvelteKit with the static adapter.
+
+## SvelteKit Integration
+
+### Project Setup
+
+Create a SvelteKit application in the `frontend/` directory:
+
+```bash
+npx sv create frontend
+```
+
+**Configuration options:**
+- Template: Skeleton project (or your preferred template)
+- Language: TypeScript (recommended)
+- Adapter: **static-adapter** (required for pb-ext compatibility)
+- Add-ons: ESLint, Prettier, Playwright (as needed)
+
+### Static Adapter Configuration
+
+SvelteKit requires configuration for static site generation. Create `frontend/src/routes/+layout.ts`:
+
+```typescript
+export const prerender = true;
+export const trailingSlash = 'always';
+```
+
+<ParamField path="prerender" type="boolean" default={true}>
+  Enable static prerendering for all routes
+</ParamField>
+
+<ParamField path="trailingSlash" type="string" default="always">
+  Ensure trailing slashes for consistent routing
+</ParamField>
+
+### Build Configuration
+
+Ensure `frontend/svelte.config.js` uses the static adapter:
+
+```javascript
+import adapter from '@sveltejs/adapter-static';
+
+export default {
+  kit: {
+    adapter: adapter({
+      pages: 'build',
+      assets: 'build',
+      fallback: 'index.html',
+      precompress: false,
+      strict: true
+    })
+  }
+};
+```
+
+## svelte-gui Starter Template
+
+For a complete, production-ready SvelteKit setup, use the **svelte-gui** template:
+
+```bash
+git clone https://github.com/magooney-loon/svelte-gui.git
+```
+
+### Features
+
+<CardGroup cols={2}>
+  <Card title="Authentication UI" icon="lock">
+    Pre-built login, signup, and profile pages
+  </Card>
+  <Card title="Dashboard Layout" icon="table-columns">
+    Responsive admin dashboard with sidebar navigation
+  </Card>
+  <Card title="API Integration" icon="plug">
+    PocketBase SDK integration and API examples
+  </Card>
+  <Card title="Dark Mode" icon="moon">
+    Built-in theme switching with Tailwind CSS
+  </Card>
+  <Card title="Components" icon="cubes">
+    Reusable UI components and form elements
+  </Card>
+  <Card title="TypeScript" icon="code">
+    Full type safety with TypeScript
+  </Card>
+</CardGroup>
+
+## pb_public/ Directory Structure
+
+The `pb_public/` directory is where static files are served from:
+
+```
+pb_public/
+├── index.html          # Main entry point
+├── _app/
+│   ├── immutable/     # Versioned assets (long cache)
+│   └── version.json   # Build version
+├── favicon.png
+└── assets/            # Images, fonts, etc.
+```
+
+### Path Resolution
+
+pb-ext searches for `pb_public/` in multiple locations:
+
+1. `./pb_public` (current directory)
+2. Executable directory + `/pb_public`
+3. Executable directory + `/../pb_public`
+4. Executable directory + `/../../pb_public`
+
+<Info>
+  The server logs the resolved `pb_public` path on startup for debugging.
+</Info>
+
+## Build Pipeline
+
+### Development Builds
+
+The `pb-cli` toolchain handles frontend builds automatically:
+
+```bash
+# Build frontend + start dev server
+pb-cli
+
+# Build frontend only (no server)
+pb-cli --build-only
+
+# Skip frontend build (server only)
+pb-cli --run-only
+```
+
+### What pb-cli Does
+
+<Steps>
+  <Step title="Install dependencies">
+    Runs `npm install` in the `frontend/` directory (if needed)
+  </Step>
+
+  <Step title="Build frontend">
+    Executes `npm run build` to generate static files
+  </Step>
+
+  <Step title="Copy to pb_public">
+    Copies built assets from `frontend/build/` to `pb_public/`
+  </Step>
+
+  <Step title="Generate OpenAPI specs">
+    Creates API documentation (in dev mode, done at runtime)
+  </Step>
+
+  <Step title="Start server">
+    Launches the pb-ext server at `http://127.0.0.1:8090`
+  </Step>
+</Steps>
+
+### Production Builds
+
+Production builds optimize assets for deployment:
+
+```bash
+pb-cli --production
+```
+
+This creates an optimized build in `dist/` with:
+- Minified JavaScript and CSS
+- Prerendered HTML pages
+- Compressed assets
+- Production-ready binary
+
+## Static File Serving
+
+All files in `pb_public/` are served at the root path:
+
+| File Path | URL |
+|-----------|-----|
+| `pb_public/index.html` | `http://localhost:8090/` |
+| `pb_public/about.html` | `http://localhost:8090/about` |
+| `pb_public/assets/logo.png` | `http://localhost:8090/assets/logo.png` |
+
+<Warning>
+  Reserved routes (`/_`, `/_/_`, `/api`) take precedence over static files. Avoid naming conflicts.
+</Warning>
+
+## Development vs Production
+
+### Development Mode
+
+```bash
+pb-cli
+```
+
+- Hot module replacement (HMR) via SvelteKit dev server
+- Source maps enabled
+- Verbose logging
+- OpenAPI specs generated at runtime via AST parsing
+
+### Production Mode
+
+```bash
+pb-cli --production
+```
+
+- Minified and optimized assets
+- No source maps
+- Structured logging only
+- OpenAPI specs read from disk (`dist/specs/`)
+- Binary optimization with `-ldflags="-s -w"`
+
+## Asset Optimization
+
+### Image Optimization
+
+Use SvelteKit's `enhanced:img` for automatic optimization:
+
+```svelte
+<script>
+  import { enhance } from '$app/forms';
+  import heroImage from '$lib/assets/hero.jpg?enhanced';
+</script>
+
+<img src={heroImage} alt="Hero" />
+```
+
+### Code Splitting
+
+SvelteKit automatically code-splits routes:
+
+```typescript
+// Lazy-load components
+const HeavyComponent = () => import('./HeavyComponent.svelte');
+```
+
+### Preloading
+
+Preload critical routes for faster navigation:
+
+```svelte
+<a href="/dashboard" data-sveltekit-preload-data="hover">
+  Dashboard
+</a>
+```
+
+## API Integration
+
+Connect your frontend to pb-ext APIs:
+
+### PocketBase SDK
+
+Install the PocketBase JavaScript SDK:
+
+```bash
+cd frontend
+npm install pocketbase
+```
+
+### Client Setup
+
+Create a PocketBase client in `frontend/src/lib/pocketbase.ts`:
+
+```typescript
+import PocketBase from 'pocketbase';
+
+export const pb = new PocketBase('http://127.0.0.1:8090');
+
+// Auto-refresh auth
+pb.autoCancellation(false);
+```
+
+### Authentication Example
+
+```typescript
+import { pb } from '$lib/pocketbase';
+
+// Login
+await pb.collection('users').authWithPassword(
+  'user@example.com',
+  'password'
+);
+
+// Get current user
+const user = pb.authStore.model;
+
+// Logout
+pb.authStore.clear();
+```
+
+## Frontend Detection
+
+The build toolchain automatically detects frontend type:
+
+<CodeGroup>
+
+```bash No Frontend
+# No frontend/ directory
+# pb-cli creates empty pb_public/
+```
+
+```bash Static Files
+# frontend/ exists but no package.json
+# Files copied directly to pb_public/
+```
+
+```bash NPM-based (SvelteKit)
+# frontend/package.json exists
+# npm install + npm run build + copy to pb_public/
+```
+
+</CodeGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="404 errors for static files">
+    **Cause**: Files not in `pb_public/` or incorrect path.
+    
+    **Solution**: 
+    - Verify files exist in `pb_public/`
+    - Check server logs for resolved `pb_public` path
+    - Ensure paths are relative (no leading `/`)
+  </Accordion>
+
+  <Accordion title="Frontend build fails">
+    **Cause**: Missing dependencies or build errors.
+    
+    **Solution**:
+    ```bash
+    cd frontend
+    npm install
+    npm run build  # Test build directly
+    ```
+  </Accordion>
+
+  <Accordion title="Assets not updating">
+    **Cause**: Browser cache or build cache.
+    
+    **Solution**:
+    - Hard refresh browser (Ctrl+Shift+R)
+    - Delete `pb_public/` and rebuild
+    - Clear SvelteKit cache: `rm -rf frontend/.svelte-kit`
+  </Accordion>
+
+  <Accordion title="Prerender errors in SvelteKit">
+    **Cause**: Dynamic routes without prerender configuration.
+    
+    **Solution**: Add `+page.ts` with prerender config:
+    ```typescript
+    export const prerender = true;
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Production Deployment" icon="rocket" href="/deployment/production">
+    Deploy your frontend to production
+  </Card>
+  <Card title="Environment Configuration" icon="gear" href="/deployment/environment">
+    Configure environment variables and settings
+  </Card>
+</CardGroup>

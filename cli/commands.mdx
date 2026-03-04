@@ -1,0 +1,680 @@
+---
+title: Command Reference
+description: Complete reference for all pb-cli commands with examples and use cases
+icon: list-check
+---
+
+## Command Overview
+
+pb-cli provides six primary commands for managing the complete development lifecycle:
+
+<CardGroup cols={2}>
+  <Card title="Default" icon="play">
+    Build frontend + start dev server
+  </Card>
+  <Card title="--install" icon="download">
+    Install dependencies + build + run
+  </Card>
+  <Card title="--build-only" icon="hammer">
+    Build frontend + generate specs
+  </Card>
+  <Card title="--run-only" icon="rocket">
+    Start server without building
+  </Card>
+  <Card title="--production" icon="box">
+    Full production build to dist/
+  </Card>
+  <Card title="--test-only" icon="flask">
+    Run tests with coverage reports
+  </Card>
+</CardGroup>
+
+---
+
+## Default Mode (Development)
+
+```bash
+pb-cli
+```
+
+### What It Does
+
+1. Validates system requirements (Go, Node.js, npm)
+2. Builds frontend assets (`npm run build`)
+3. Copies build output to `pb_public/`
+4. Prepares server environment
+5. Starts development server (`go run ./cmd/server --dev serve`)
+
+### Use Cases
+
+<AccordionGroup>
+  <Accordion title="Standard Development Workflow">
+    Use this as your primary development command. It ensures frontend changes are built before the server starts.
+    
+    ```bash
+    cd my-pb-ext-project
+    pb-cli
+    ```
+    
+    Server runs at `http://127.0.0.1:8090` by default.
+    - Admin panel: `/_/`
+    - pb-ext dashboard: `/_/_`
+  </Accordion>
+  
+  <Accordion title="First Time Setup">
+    When cloning a repository for the first time, use `--install` instead:
+    
+    ```bash
+    git clone <repo>
+    cd <repo>
+    pb-cli --install
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Output
+
+```bash
+▲ pb-cli v1.0.0 (linux/amd64)
+[>] development
+
+[>] Build Assets
+[·] Frontend build (npm)
+    # npm output...
+[✓] Frontend built (2.3s)
+
+[·] Preparing environment
+[✓] Environment ready
+
+[·] Starting dev server
+Server started → http://127.0.0.1:8090
+```
+
+<Info>
+  In development mode, OpenAPI specs are generated at runtime via AST parsing—no disk files needed.
+</Info>
+
+---
+
+## --install
+
+```bash
+pb-cli --install
+```
+
+### What It Does
+
+1. Installs Go dependencies (`go mod tidy`, `go mod download`)
+2. Installs npm dependencies (`npm ci` or `npm install`)
+3. Builds frontend assets
+4. Starts development server
+
+### Use Cases
+
+<AccordionGroup>
+  <Accordion title="Fresh Clone">
+    First command to run after cloning a repository:
+    
+    ```bash
+    git clone https://github.com/yourusername/my-pb-ext-app
+    cd my-pb-ext-app
+    pb-cli --install
+    ```
+  </Accordion>
+  
+  <Accordion title="After Dependency Updates">
+    When `package.json` or `go.mod` changes:
+    
+    ```bash
+    git pull
+    pb-cli --install
+    ```
+  </Accordion>
+  
+  <Accordion title="Clean Environment">
+    Reset dependencies after corruption or conflicts:
+    
+    ```bash
+    rm -rf node_modules go.mod.sum
+    pb-cli --install
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Dependency Installation Logic
+
+**Go Dependencies:**
+```bash
+go mod tidy
+go mod download
+```
+
+**npm Dependencies (if `package.json` exists):**
+```bash
+# If package-lock.json exists:
+npm ci
+
+# Otherwise:
+npm install
+```
+
+---
+
+## --build-only
+
+```bash
+pb-cli --build-only
+```
+
+### What It Does
+
+1. Validates system requirements
+2. Builds frontend assets
+3. Generates OpenAPI specs (`--generate-specs-dir`)
+4. Validates OpenAPI specs (`--validate-specs-dir`)
+5. Exits without starting server
+
+### Use Cases
+
+<AccordionGroup>
+  <Accordion title="CI/CD Pipeline">
+    Build and validate assets in continuous integration:
+    
+    ```yaml
+    # .github/workflows/build.yml
+    - name: Build Assets
+      run: pb-cli --build-only
+    
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: frontend-assets
+        path: pb_public/
+    ```
+  </Accordion>
+  
+  <Accordion title="Frontend Development">
+    Rebuild frontend after changes without restarting the server:
+    
+    Terminal 1:
+    ```bash
+    pb-cli --run-only
+    ```
+    
+    Terminal 2 (when frontend changes):
+    ```bash
+    pb-cli --build-only
+    ```
+    
+    Refresh browser to see changes.
+  </Accordion>
+  
+  <Accordion title="Pre-commit Hook">
+    Validate builds before committing:
+    
+    ```bash
+    # .git/hooks/pre-commit
+    #!/bin/sh
+    pb-cli --build-only || exit 1
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### OpenAPI Spec Generation
+
+This command generates versioned OpenAPI JSON files:
+
+```bash
+go run ./cmd/server --generate-specs-dir ./core/server/api/specs
+go run ./cmd/server --validate-specs-dir ./core/server/api/specs
+```
+
+Output:
+```
+core/server/api/specs/
+├── v1.json
+├── v2.json
+└── ...
+```
+
+---
+
+## --run-only
+
+```bash
+pb-cli --run-only
+```
+
+### What It Does
+
+1. Validates system requirements
+2. Validates server setup (checks `cmd/server/main.go`)
+3. Prepares server environment (creates `pb_public/` if missing)
+4. Starts development server **without building frontend**
+
+### Use Cases
+
+<AccordionGroup>
+  <Accordion title="Backend-Only Development">
+    When working exclusively on Go code:
+    
+    ```bash
+    pb-cli --run-only
+    ```
+    
+    No frontend build overhead—server starts immediately.
+  </Accordion>
+  
+  <Accordion title="Rapid Restart Cycles">
+    During debugging when frontend hasn't changed:
+    
+    ```bash
+    # First run (build + serve):
+    pb-cli
+    
+    # Subsequent runs (serve only):
+    pb-cli --run-only
+    ```
+  </Accordion>
+  
+  <Accordion title="Separate Build Process">
+    Use with external frontend dev server:
+    
+    Terminal 1 (frontend dev server):
+    ```bash
+    cd frontend
+    npm run dev  # Runs on :5173
+    ```
+    
+    Terminal 2 (backend server):
+    ```bash
+    pb-cli --run-only  # Runs on :8090
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  Ensure `pb_public/` contains valid frontend assets before using `--run-only`. If empty, your app may not load correctly.
+</Warning>
+
+---
+
+## --production
+
+```bash
+pb-cli --production
+```
+
+### What It Does
+
+1. Cleans and creates `dist/` directory
+2. Validates system requirements
+3. Installs dependencies (if `--install` also specified)
+4. Builds frontend for production
+5. Generates and validates OpenAPI specs
+6. Compiles optimized server binary
+7. Copies all assets to `dist/`
+8. Runs test suite with coverage
+9. Creates production archive (`.tar.gz`)
+
+### Use Cases
+
+<AccordionGroup>
+  <Accordion title="Deployment Build">
+    Create production-ready artifacts for deployment:
+    
+    ```bash
+    pb-cli --production
+    ```
+    
+    Deploy the `dist/` directory to your server.
+  </Accordion>
+  
+  <Accordion title="Release Pipeline">
+    Automated release builds in CI/CD:
+    
+    ```yaml
+    # .github/workflows/release.yml
+    - name: Production Build
+      run: pb-cli --production
+    
+    - name: Upload Release Assets
+      uses: actions/upload-artifact@v3
+      with:
+        name: production-build
+        path: dist/
+    ```
+  </Accordion>
+  
+  <Accordion title="Custom Output Directory">
+    Specify a different output directory:
+    
+    ```bash
+    pb-cli --production --dist release
+    ```
+    
+    Output: `release/` instead of `dist/`
+  </Accordion>
+</AccordionGroup>
+
+### Production Build Output
+
+```
+dist/
+├── pb-cli                  # Optimized binary (-ldflags="-s -w")
+├── pb_public/              # Frontend assets
+│   ├── index.html
+│   ├── assets/
+│   └── ...
+├── specs/                  # Pre-generated OpenAPI specs
+│   ├── v1.json
+│   └── v2.json
+├── test-reports/           # Test coverage and results
+│   ├── test-summary.txt
+│   ├── test-report.json
+│   ├── coverage.html
+│   └── coverage-summary.txt
+├── build-info.txt          # Build metadata
+├── package-metadata.json   # Package info
+└── pb-ext-production.tar.gz  # Complete archive
+```
+
+### Binary Optimization
+
+The production binary is compiled with:
+
+```bash
+go build -ldflags="-s -w" -o dist/pb-cli ./cmd/server
+```
+
+**Flags:**
+- `-s`: Strip symbol table (reduces debugging info)
+- `-w`: Strip DWARF debugging information
+
+**Result:** 30-50% smaller binary size
+
+<Info>
+  For deployment automation, see the [pb-deployer](https://github.com/magooney-loon/pb-deployer) project.
+</Info>
+
+---
+
+## --test-only
+
+```bash
+pb-cli --test-only
+```
+
+### What It Does
+
+1. Validates system requirements
+2. Auto-discovers test packages (walks project directory)
+3. Runs tests with coverage tracking
+4. Generates multiple report formats:
+   - `test-summary.txt` - Human-readable summary
+   - `test-report.json` - Machine-readable JSON
+   - `coverage.html` - Interactive HTML coverage report
+   - `coverage-summary.txt` - Function-level coverage
+
+### Use Cases
+
+<AccordionGroup>
+  <Accordion title="Pre-commit Validation">
+    Verify all tests pass before committing:
+    
+    ```bash
+    pb-cli --test-only
+    ```
+    
+    Add to pre-commit hook:
+    ```bash
+    #!/bin/sh
+    pb-cli --test-only || exit 1
+    ```
+  </Accordion>
+  
+  <Accordion title="CI/CD Testing">
+    Automated testing in continuous integration:
+    
+    ```yaml
+    # .github/workflows/test.yml
+    - name: Run Tests
+      run: pb-cli --test-only
+    
+    - name: Upload Coverage
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-reports
+        path: dist/test-reports/
+    ```
+  </Accordion>
+  
+  <Accordion title="Coverage Analysis">
+    Generate detailed coverage reports:
+    
+    ```bash
+    pb-cli --test-only
+    open dist/test-reports/coverage.html
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Test Discovery
+
+pb-cli automatically discovers test packages by:
+
+1. Walking the project directory
+2. Finding all `*_test.go` files
+3. Extracting unique package paths
+4. Skipping: `vendor/`, `node_modules/`, `dist/`, `pb_data/`, `pb_public/`, `frontend/`
+
+### Output Example
+
+```bash
+▲ pb-cli v1.0.0 (linux/amd64)
+[>] test
+
+[>] Test Execution
+    Packages: 12
+
+    [✓] ./core/server (45ms)
+      (8 passed)
+    [✓] ./core/logging (23ms)
+      (5 passed)
+    [✓] ./core/monitoring (67ms)
+      (12 passed)
+    [✗] ./core/server/api (123ms)
+      (15 passed, 2 failed)
+
+[>] Test Summary
+    [✗] Tests failed (38 passed, 2 failed, 258ms)
+
+    [i] Reports: test-summary.txt, test-report.json, coverage.html
+```
+
+### Report Formats
+
+**test-summary.txt:**
+```
+pb-cli Test Suite Summary
+==============================
+
+Execution Time: 2024-03-04 10:23:45
+Duration: 258ms
+Root Directory: /home/user/project
+
+Go Version: go version go1.21.5 linux/amd64
+Test Command: go run ./cmd/scripts/main.go --test-only
+
+Status: FAILED
+Error: test suite failed
+Reports Directory: /home/user/project/dist/test-reports
+```
+
+**test-report.json:**
+```json
+{
+  "timestamp": "2024-03-04T10:23:45Z",
+  "rootDirectory": "/home/user/project",
+  "reportsDirectory": "/home/user/project/dist/test-reports",
+  "environment": {
+    "goVersion": "go version go1.21.5 linux/amd64",
+    "nodeVersion": "v20.11.0",
+    "npmVersion": "10.2.4"
+  },
+  "testSuite": {
+    "command": "go run ./cmd/scripts/main.go --test-only",
+    "status": "failed",
+    "error": "test suite failed",
+    "duration": "258ms"
+  }
+}
+```
+
+**coverage.html:**  
+Interactive HTML report with line-by-line coverage visualization
+
+---
+
+## --help
+
+```bash
+pb-cli --help
+```
+
+Displays usage information and available commands:
+
+```
+▲ pb-cli v1.0.0 - PocketBase deployment automation
+
+USAGE:
+  pb-cli [options]
+
+OPTIONS:
+  --help          Show this help
+  --install       Install dependencies
+  --production    Production build
+  --build-only    Build assets only
+  --run-only      Start server only
+  --test-only     Run tests only
+  --dist DIR      Output directory
+
+EXAMPLES:
+  pb-cli
+  pb-cli --production
+  pb-cli --test-only
+```
+
+---
+
+## Combining Flags
+
+### Install + Default
+
+```bash
+pb-cli --install
+```
+
+Installs dependencies, builds frontend, and starts server.
+
+### Production + Custom Output
+
+```bash
+pb-cli --production --dist release
+```
+
+Creates production build in `release/` instead of `dist/`.
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Command not found">
+    **Problem:** `pb-cli: command not found`
+    
+    **Solution:** Ensure `$GOPATH/bin` is in your `PATH`:
+    
+    ```bash
+    export PATH=$PATH:$(go env GOPATH)/bin
+    ```
+    
+    Or use local execution:
+    ```bash
+    go run cmd/pb-cli/main.go [command]
+    ```
+  </Accordion>
+  
+  <Accordion title="Frontend build failed">
+    **Problem:** `npm run build failed`
+    
+    **Solution:**
+    1. Check `package.json` exists in `frontend/`
+    2. Run `npm install` manually to check for errors
+    3. Verify Node.js version: `node --version`
+    4. Check build script exists in `package.json`:
+       ```json
+       {
+         "scripts": {
+           "build": "vite build"
+         }
+       }
+       ```
+  </Accordion>
+  
+  <Accordion title="Server compilation failed">
+    **Problem:** `go build failed`
+    
+    **Solution:**
+    1. Run `go mod tidy` to resolve dependencies
+    2. Verify `cmd/server/main.go` exists
+    3. Check Go version: `go version` (requires 1.19+)
+    4. Review compiler errors for missing imports
+  </Accordion>
+  
+  <Accordion title="Permission denied">
+    **Problem:** `permission denied` when writing to `pb_public/` or `dist/`
+    
+    **Solution:**
+    ```bash
+    sudo chown -R $USER:$USER .
+    chmod -R u+w pb_public dist
+    ```
+  </Accordion>
+  
+  <Accordion title="Tests failing in CI but passing locally">
+    **Problem:** Tests pass locally but fail in CI pipeline
+    
+    **Solution:**
+    1. Check for environment-specific dependencies
+    2. Ensure CI uses same Go/Node versions:
+       ```yaml
+       - uses: actions/setup-go@v4
+         with:
+           go-version: '1.21'
+       - uses: actions/setup-node@v4
+         with:
+           node-version: '20'
+       ```
+    3. Review test isolation (check for shared state)
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Build Pipeline" icon="pipe" href="/cli/build-pipeline">
+    Deep dive into build orchestration internals
+  </Card>
+  <Card title="pb-cli Overview" icon="terminal" href="/cli/pb-cli">
+    Return to pb-cli overview
+  </Card>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get started with pb-ext development
+  </Card>
+  <Card title="Deployment" icon="server" href="/deployment/production">
+    Deploy your production build
+  </Card>
+</CardGroup>

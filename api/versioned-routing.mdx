@@ -1,0 +1,363 @@
+---
+title: Versioned API Routing
+description: Manage multiple API versions with isolated registries and version-specific configurations
+---
+
+## APIVersionManager Concept
+
+The `APIVersionManager` coordinates multiple API versions, each with its own:
+
+- **APIRegistry** — stores endpoints and generates OpenAPI specs
+- **ASTParser** — analyzes Go source for that version's handlers
+- **SchemaGenerator** — generates component schemas
+- **Configuration** — title, description, status, public Swagger access
+
+This isolation means v1 and v2 can have completely different endpoints, schemas, and documentation.
+
+<Note>
+Each version gets a separate OpenAPI 3.0.3 spec. Component schemas are pruned per-version — only schemas referenced by that version's endpoints are included.
+</Note>
+
+## VersionedAPIRouter Usage
+
+The `VersionedAPIRouter` wraps PocketBase's router and provides version-aware route registration. It automatically:
+
+- Registers routes to both the runtime router and the documentation registry
+- Tracks request/response schemas via AST analysis
+- Handles middleware binding (`.Bind()` and `.BindFunc()`)
+- Extracts path parameters from route patterns
+
+### Basic Example
+
+```go
+func registerV1Routes(router *api.VersionedAPIRouter) {
+    router.GET("/api/v1/todos", getTodosHandler)
+    router.POST("/api/v1/todos", createTodoHandler).Bind(apis.RequireAuth())
+    router.GET("/api/v1/todos/{id}", getTodoHandler)
+}
+```
+
+Each method (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`) returns a `*VersionedRouteChain` that supports middleware binding.
+
+## Managing Multiple API Versions
+
+### Version Configurations
+
+`APIDocsConfig` holds version-specific settings:
+
+```go
+type APIDocsConfig struct {
+    Title       string // "My API"
+    Version     string // "1.0.0" or "2.0.0"
+    Description string
+    BaseURL     string // "http://localhost:8090"
+    Enabled     bool   // Enable doc generation
+    Status      string // "stable", "testing", "deprecated"
+    
+    // Public Swagger UI access (no auth required)
+    PublicSwagger bool
+    
+    // Contact info
+    ContactName  string
+    ContactEmail string
+    ContactURL   string
+    
+    // License
+    LicenseName string
+    LicenseURL  string
+    
+    // Terms of service
+    TermsOfService string
+    
+    // External docs
+    ExternalDocsURL  string
+    ExternalDocsDesc string
+}
+```
+
+### Version Status Levels
+
+| Status | Meaning | Typical Use |
+|--------|---------|-------------|
+| `stable` | Production-ready, recommended version | Default for most APIs |
+| `testing` | Beta/preview version, subject to change | New features under evaluation |
+| `deprecated` | Legacy version, scheduled for removal | Migration period |
+
+<Warning>
+The `Status` field is informational only — it appears in the OpenAPI spec's server description but doesn't affect routing or access control.
+</Warning>
+
+## Real Example from routes.go
+
+Here's how the demo app initializes a versioned system:
+
+<CodeGroup>
+```go initVersionedSystem()
+func initVersionedSystem() *api.APIVersionManager {
+    // Base config shared by all versions
+    baseConfig := &api.APIDocsConfig{
+        Title:       "pb-ext demo api",
+        Description: "Hello world",
+        BaseURL:     "http://127.0.0.1:8090/",
+        Enabled:     true,
+        ContactName:  "pb-ext Team",
+        ContactEmail: "contact@magooney.org",
+        ContactURL:   "https://github.com/magooney-loon/pb-ext",
+        LicenseName: "MIT",
+        LicenseURL:  "https://opensource.org/licenses/MIT",
+        TermsOfService: "https://example.com/terms",
+        ExternalDocsURL:  "https://github.com/magooney-loon/pb-ext",
+        ExternalDocsDesc: "pb-ext documentation",
+    }
+
+    // v1 config (stable, public Swagger)
+    v1Config := *baseConfig
+    v1Config.Version = "1.0.0"
+    v1Config.Status = "stable"
+    v1Config.PublicSwagger = true
+
+    // v2 config (testing, private Swagger)
+    v2Config := *baseConfig
+    v2Config.Version = "2.0.0"
+    v2Config.Status = "testing"
+    v2Config.PublicSwagger = false
+
+    // Initialize with configs and route registrars
+    return api.InitializeVersionedSystemWithRoutes(map[string]*api.VersionSetup{
+        "v1": {
+            Config: &v1Config,
+            Routes: registerV1Routes,
+        },
+        "v2": {
+            Config: &v2Config,
+            Routes: registerV2Routes,
+        },
+    }, "v1") // "v1" is the default version
+}
+```
+
+```go registerV1Routes
+// Manual route registration (explicit control)
+func registerV1Routes(router *api.VersionedAPIRouter) {
+    prefix := "/api/v1"
+    router.GET(prefix+"/todos", getTodosHandler)
+    router.POST(prefix+"/todos", createTodoHandler).Bind(apis.RequireAuth())
+    router.GET(prefix+"/todos/{id}", getTodoHandler)
+    router.PATCH(prefix+"/todos/{id}", updateTodoHandler).Bind(apis.RequireAuth())
+    router.DELETE(prefix+"/todos/{id}", deleteTodoHandler).Bind(apis.RequireAuth())
+}
+```
+
+```go registerV2Routes
+// Using SetPrefix for cleaner code
+func registerV2Routes(router *api.VersionedAPIRouter) {
+    v2 := router.SetPrefix("/api/v2")
+    v2.GET("/time", timeHandler).BindFunc(requestLoggerMW)
+}
+```
+</CodeGroup>
+
+### Server Registration
+
+The version manager must be registered with the PocketBase app to serve endpoints:
+
+```go
+func registerRoutes(app core.App) {
+    versionManager := initVersionedSystem()
+
+    // Register routes on serve
+    app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+        if err := versionManager.RegisterAllVersionRoutes(e); err != nil {
+            return err
+        }
+        return e.Next()
+    })
+
+    // Register version management endpoints
+    versionManager.RegisterWithServer(app)
+}
+```
+
+This sets up:
+
+- All version routes (e.g., `/api/v1/todos`, `/api/v2/time`)
+- Version listing endpoint (`/api/docs/versions`)
+- Per-version OpenAPI endpoints (`/api/docs/v1`, `/api/docs/v2`)
+- Public Swagger UI endpoints (if `PublicSwagger: true`)
+- Debug AST endpoint (`/api/docs/debug/ast`)
+
+## Public vs Private Swagger Access
+
+### Public Swagger (`PublicSwagger: true`)
+
+Exposes two endpoints **without authentication**:
+
+```
+GET /api/docs/v1/spec     — OpenAPI JSON spec
+GET /api/docs/v1/swagger  — Interactive Swagger UI
+```
+
+<Note>
+Ideal for public APIs where you want developers to explore the documentation without creating an account.
+</Note>
+
+### Private Swagger (`PublicSwagger: false`)
+
+Requires **superuser authentication** to access:
+
+```
+GET /api/docs/v2          — OpenAPI JSON spec (superuser only)
+GET /api/docs/v2/swagger  — Not available (404)
+```
+
+<Warning>
+If `PublicSwagger: false`, the `/swagger` endpoint is not registered at all. Use the authenticated `/api/docs/v2` endpoint to retrieve the spec programmatically.
+</Warning>
+
+## Version Endpoints Reference
+
+### List All Versions
+
+```http
+GET /api/docs/versions
+Authorization: Bearer <superuser_token>
+```
+
+<Accordion title="Response Example">
+```json
+{
+  "versions": [
+    {
+      "version": "v1",
+      "status": "stable",
+      "created_at": "2024-01-15T10:00:00Z",
+      "updated_at": "2024-01-15T10:00:00Z",
+      "config": {
+        "title": "pb-ext demo api",
+        "version": "1.0.0",
+        "public_swagger": true
+      },
+      "endpoints": 5
+    },
+    {
+      "version": "v2",
+      "status": "testing",
+      "created_at": "2024-01-15T10:00:00Z",
+      "updated_at": "2024-01-15T10:00:00Z",
+      "config": {
+        "title": "pb-ext demo api",
+        "version": "2.0.0",
+        "public_swagger": false
+      },
+      "endpoints": 1
+    }
+  ],
+  "default_version": "v1",
+  "total_versions": 2,
+  "generated_at": "2024-01-15T10:00:00Z"
+}
+```
+</Accordion>
+
+### Get Version-Specific OpenAPI Spec
+
+<CodeGroup>
+```http Public Access (if PublicSwagger: true)
+GET /api/docs/v1/spec
+```
+
+```http Authenticated Access (always available)
+GET /api/docs/v1
+Authorization: Bearer <superuser_token>
+```
+</CodeGroup>
+
+Both return the same OpenAPI 3.0.3 JSON spec.
+
+### Access Swagger UI
+
+```http
+GET /api/docs/v1/swagger
+```
+
+Only available if `PublicSwagger: true`. Returns an HTML page with embedded Swagger UI (dark mode CSS included).
+
+## Advanced Configuration
+
+### Dynamic Server URLs
+
+The system automatically constructs server URLs based on the request:
+
+```go
+// Configured BaseURL is localhost (dev mode)
+BaseURL: "http://localhost:8090"
+
+// Request comes from production domain
+Request-Host: api.example.com
+
+// Generated server URL in OpenAPI spec:
+{
+  "servers": [
+    {
+      "url": "https://api.example.com/api/v1",
+      "description": "API v1 Server (stable)"
+    }
+  ]
+}
+```
+
+<Note>
+If `BaseURL` is **not** localhost, the configured value is used. This ensures production specs use the correct domain.
+</Note>
+
+### Custom Version Validation
+
+Version strings are validated when registering:
+
+```go
+func (vm *APIVersionManager) RegisterVersion(version string, config *APIDocsConfig) error {
+    if err := ValidateVersionString(version); err != nil {
+        return err // Invalid version format
+    }
+    // ...
+}
+```
+
+Valid formats: `v1`, `v2`, `v1.0`, `v2.0.0`, etc.
+
+## Migration Workflow
+
+When introducing a new API version:
+
+<Steps>
+  <Step title="Create new version config">
+    Set `Status: "testing"` and `PublicSwagger: false` initially.
+  </Step>
+  
+  <Step title="Register routes">
+    Create a new `registerV2Routes()` function and add it to the version manager.
+  </Step>
+  
+  <Step title="Test internally">
+    Use the authenticated OpenAPI endpoint to validate the spec.
+  </Step>
+  
+  <Step title="Enable public access">
+    Set `PublicSwagger: true` and `Status: "stable"` when ready.
+  </Step>
+  
+  <Step title="Deprecate old version">
+    Update v1 to `Status: "deprecated"` and add a sunset date to the description.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Route Registration" icon="route" href="/api/route-registration">
+    Learn manual and CRUD registration patterns
+  </Card>
+  <Card title="Annotations Reference" icon="tag" href="/api/annotations">
+    Complete guide to source file directives
+  </Card>
+</CardGroup>

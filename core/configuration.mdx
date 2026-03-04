@@ -1,0 +1,463 @@
+---
+title: Configuration
+description: Server options, configuration patterns, environment setup, and PocketBase integration
+icon: "gear"
+---
+
+## Overview
+
+pb-ext uses the **functional options pattern** for server configuration. This provides a flexible, type-safe way to customize server behavior without breaking changes.
+
+## Server Options
+
+All server options are defined in `core/server/server_options.go` and re-exported through the public facade.
+
+### Available Options
+
+<CardGroup cols={2}>
+  <Card title="WithConfig" icon="file-code">
+    Provide a custom PocketBase configuration
+  </Card>
+  <Card title="WithPocketbase" icon="database">
+    Use an existing PocketBase instance
+  </Card>
+  <Card title="InDeveloperMode" icon="code">
+    Enable developer mode (hot reload, verbose logging)
+  </Card>
+  <Card title="InNormalMode" icon="server">
+    Enable production mode (optimized, minimal logging)
+  </Card>
+</CardGroup>
+
+## Option Functions
+
+### InDeveloperMode / InNormalMode
+
+The simplest way to configure the server:
+
+```go cmd/server/main.go
+func initApp(devMode bool) {
+    var opts []app.Option
+
+    if devMode {
+        opts = append(opts, app.InDeveloperMode())
+    } else {
+        opts = append(opts, app.InNormalMode())
+    }
+
+    srv := app.New(opts...)
+    // ...
+}
+```
+
+**Implementation:**
+
+```go core/server/server_options.go
+// InDeveloperMode is a shortcut to enable developer mode.
+func InDeveloperMode() Option {
+    return func(opts *options) {
+        opts.developer_mode = true
+        log.Println("🔧 Developer mode")
+    }
+}
+
+// InNormalMode is a shortcut to disable developer mode.
+func InNormalMode() Option {
+    return func(opts *options) {
+        opts.developer_mode = false
+        log.Println("🚀 Production mode")
+    }
+}
+```
+
+<Info>
+Developer mode sets PocketBase's `DefaultDev` flag, enabling features like auto-migrations and verbose logging.
+</Info>
+
+### WithConfig
+
+Provide a custom PocketBase configuration:
+
+```go
+pbConfig := &pocketbase.Config{
+    DefaultDev:     true,
+    DefaultDataDir: "./custom_pb_data",
+}
+
+srv := app.New(app.WithConfig(pbConfig))
+```
+
+**Implementation:**
+
+```go core/server/server_options.go
+// WithConfig sets the PocketBase configuration to use.
+// Using this together with WithPocketbase will panic.
+func WithConfig(config *pocketbase.Config) Option {
+    return func(opts *options) {
+        opts.config = config
+    }
+}
+```
+
+<Warning>
+`WithConfig` and `WithPocketbase` **cannot** be used together. If both are provided, the server will panic with `ErrConfigurationConflict`.
+</Warning>
+
+### WithPocketbase
+
+Use an existing PocketBase instance:
+
+```go
+pb := pocketbase.New()
+// Customize pb here...
+
+srv := app.New(app.WithPocketbase(pb))
+```
+
+**Implementation:**
+
+```go core/server/server_options.go
+// WithPocketbase sets a fully initialized PocketBase instance to use.
+// Cannot be used together with WithConfig; will panic if a config is already set.
+func WithPocketbase(pocketbase *pocketbase.PocketBase) Option {
+    return func(opts *options) {
+        if opts.config != nil {
+            pocketbase.Logger().Error(ErrConfigurationConflict.Error())
+            panic(ErrConfigurationConflict)
+        }
+        opts.pocketbase = pocketbase
+    }
+}
+```
+
+<Tip>
+Use `WithPocketbase` when you need fine-grained control over the PocketBase instance before pb-ext wraps it.
+</Tip>
+
+### WithMode
+
+Generic mode setter (used internally by `InDeveloperMode` / `InNormalMode`):
+
+```go core/server/server_options.go
+// WithMode sets whether developer mode is enabled.
+func WithMode(developer_mode bool) Option {
+    return func(opts *options) {
+        opts.developer_mode = developer_mode
+    }
+}
+```
+
+## Configuration Patterns
+
+### Pattern 1: Simple Mode Toggle
+
+The most common pattern - toggle between dev and production:
+
+```go cmd/server/main.go
+func main() {
+    devMode := flag.Bool("dev", false, "Run in developer mode")
+    flag.Parse()
+
+    initApp(*devMode)
+}
+
+func initApp(devMode bool) {
+    var opts []app.Option
+
+    if devMode {
+        opts = append(opts, app.InDeveloperMode())
+    } else {
+        opts = append(opts, app.InNormalMode())
+    }
+
+    srv := app.New(opts...)
+    // ...
+}
+```
+
+### Pattern 2: Custom PocketBase Config
+
+Provide a custom data directory or other PocketBase settings:
+
+```go
+pbConfig := &pocketbase.Config{
+    DefaultDev:     true,
+    DefaultDataDir: "./custom_pb_data",
+}
+
+srv := app.New(app.WithConfig(pbConfig))
+```
+
+### Pattern 3: Existing PocketBase Instance
+
+Use an existing PocketBase instance (useful for testing or advanced setups):
+
+```go
+pb := pocketbase.New()
+pb.Logger().SetLevel(slog.LevelDebug)
+// Other PocketBase customizations...
+
+srv := app.New(app.WithPocketbase(pb))
+```
+
+### Pattern 4: Custom Port
+
+Set a custom port using command-line arguments:
+
+```go cmd/server/main.go
+func main() {
+    devMode := flag.Bool("dev", false, "Run in developer mode")
+    port := flag.String("port", "8090", "HTTP port")
+    flag.Parse()
+
+    // Inject custom port into os.Args for PocketBase
+    os.Args = []string{"app", "serve", fmt.Sprintf("--http=127.0.0.1:%s", *port)}
+
+    initApp(*devMode)
+}
+```
+
+<Info>
+PocketBase reads port configuration from `os.Args`. Set it before calling `srv.Start()`.
+</Info>
+
+## Environment Variables
+
+While pb-ext doesn't enforce specific environment variables, you can integrate them with standard Go patterns:
+
+```go
+func main() {
+    // Read from environment
+    devMode := os.Getenv("DEV_MODE") == "true"
+    dataDir := os.Getenv("DATA_DIR")
+    if dataDir == "" {
+        dataDir = "./pb_data"
+    }
+
+    pbConfig := &pocketbase.Config{
+        DefaultDev:     devMode,
+        DefaultDataDir: dataDir,
+    }
+
+    srv := app.New(app.WithConfig(pbConfig))
+    // ...
+}
+```
+
+### Common Environment Variables
+
+| Variable | Purpose | Example |
+|----------|---------|----------|
+| `DEV_MODE` | Enable developer mode | `true` / `false` |
+| `DATA_DIR` | PocketBase data directory | `./pb_data` |
+| `HTTP_PORT` | Server port | `8090` |
+| `LOG_LEVEL` | Logging level | `debug` / `info` / `warn` / `error` |
+
+## PocketBase Integration
+
+### Accessing PocketBase
+
+The underlying PocketBase instance is accessible via `srv.App()`:
+
+```go
+srv := app.New(app.InDeveloperMode())
+
+// Access PocketBase directly
+pb := srv.App()
+
+// Use PocketBase APIs
+pb.OnServe().BindFunc(func(e *core.ServeEvent) error {
+    // Custom route
+    e.Router.GET("/custom", func(c *core.RequestEvent) error {
+        return c.JSON(200, map[string]string{"message": "Hello"})
+    })
+    return e.Next()
+})
+```
+
+### PocketBase Configuration
+
+The `pocketbase.Config` struct supports these fields:
+
+```go
+type Config struct {
+    DefaultDev     bool   // Enable developer mode
+    DefaultDataDir string // Data directory path
+    DefaultDebug   bool   // Enable debug mode
+}
+```
+
+### Hook Registration
+
+Register hooks on the PocketBase instance **before** starting the server:
+
+```go
+srv := app.New(app.InDeveloperMode())
+
+// Register collections
+registerCollections(srv.App())
+
+// Register routes
+registerRoutes(srv.App())
+
+// Register jobs
+registerJobs(srv.App())
+
+// Custom serve hook
+srv.App().OnServe().BindFunc(func(e *core.ServeEvent) error {
+    app.SetupRecovery(srv.App(), e)
+    return e.Next()
+})
+
+// Start server (triggers all hooks)
+if err := srv.Start(); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Complete Example
+
+Here's the complete example from `cmd/server/main.go`:
+
+```go cmd/server/main.go
+package main
+
+import (
+    "flag"
+    "log"
+
+    app "github.com/magooney-loon/pb-ext/core"
+    "github.com/pocketbase/pocketbase/core"
+)
+
+func main() {
+    devMode := flag.Bool("dev", false, "Run in developer mode")
+    generateSpecsDir := flag.String("generate-specs-dir", "", "Generate OpenAPI specs")
+    validateSpecsDir := flag.String("validate-specs-dir", "", "Validate OpenAPI specs")
+    flag.Parse()
+
+    // OpenAPI spec generation mode
+    if *generateSpecsDir != "" {
+        gen := app.NewSpecGeneratorWithInitializer(func() (*app.APIVersionManager, error) {
+            return initVersionedSystem(), nil
+        })
+        if err := gen.Generate(*generateSpecsDir, ""); err != nil {
+            log.Fatal(err)
+        }
+        return
+    }
+
+    // OpenAPI spec validation mode
+    if *validateSpecsDir != "" {
+        gen := app.NewSpecGeneratorWithInitializer(func() (*app.APIVersionManager, error) {
+            return initVersionedSystem(), nil
+        })
+        if err := gen.Validate(*validateSpecsDir); err != nil {
+            log.Fatal(err)
+        }
+        return
+    }
+
+    initApp(*devMode)
+}
+
+func initApp(devMode bool) {
+    var opts []app.Option
+
+    if devMode {
+        opts = append(opts, app.InDeveloperMode())
+    } else {
+        opts = append(opts, app.InNormalMode())
+    }
+
+    // Option 1: Use a custom PocketBase config
+    // pbConfig := &pocketbase.Config{
+    //     DefaultDev:     true,
+    //     DefaultDataDir: "./custom_pb_data",
+    // }
+    // opts = append(opts, app.WithConfig(pbConfig))
+
+    // Option 2: Use an existing PocketBase instance
+    // pb := pocketbase.New()
+    // opts = append(opts, app.WithPocketbase(pb))
+
+    // Set custom port programmatically
+    // os.Args = []string{"app", "serve", "--http=127.0.0.1:9090"}
+
+    srv := app.New(opts...)
+
+    app.SetupLogging(srv)
+
+    registerCollections(srv.App())
+    registerRoutes(srv.App())
+    registerJobs(srv.App())
+
+    srv.App().OnServe().BindFunc(func(e *core.ServeEvent) error {
+        app.SetupRecovery(srv.App(), e)
+        return e.Next()
+    })
+
+    if err := srv.Start(); err != nil {
+        srv.App().Logger().Error("Fatal application error",
+            "error", err,
+            "uptime", srv.Stats().StartTime,
+            "total_requests", srv.Stats().TotalRequests.Load(),
+        )
+        log.Fatal(err)
+    }
+}
+```
+
+## Options Internal Structure
+
+The internal `options` struct:
+
+```go core/server/server_options.go
+type options struct {
+    config         *pocketbase.Config
+    pocketbase     *pocketbase.PocketBase
+    developer_mode bool
+}
+
+type Option func(*options)
+```
+
+### Configuration Conflict
+
+Attempting to use both `WithConfig` and `WithPocketbase` results in a panic:
+
+```go core/server/server_options.go
+var ErrConfigurationConflict = errors.New(
+    `WithConfig cannot be used together with WithPocketbase, cause second ` +
+    `contains already initialized pocketbase.Config instance. Just pass your ` +
+    `config into pocketbase.NewWithConfig func, that's enough.`,
+)
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Use Simple Mode Toggle">
+    Prefer `InDeveloperMode()` / `InNormalMode()` for most use cases
+  </Step>
+  <Step title="Only Customize When Needed">
+    Only use `WithConfig` / `WithPocketbase` if you need advanced PocketBase customization
+  </Step>
+  <Step title="Environment-Aware Configuration">
+    Read mode and settings from environment variables or flags
+  </Step>
+  <Step title="Register Hooks Before Start">
+    Always register user hooks before calling `srv.Start()`
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Server Lifecycle" href="/core/server-lifecycle" icon="timeline">
+    Understand bootstrap, serve, and runtime phases
+  </Card>
+  <Card title="Job Management" href="/features/cron-jobs" icon="clock">
+    Learn how to register and manage cron jobs
+  </Card>
+</CardGroup>

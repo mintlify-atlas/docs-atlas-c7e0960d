@@ -1,0 +1,482 @@
+---
+title: Reserved Routes
+description: Protected routes registered by pb-ext for dashboard, cron management, and API documentation
+---
+
+# Reserved Routes
+
+pb-ext registers the following routes. **Do not register your own routes at these paths.**
+
+<Warning>
+  Registering routes at these paths will cause conflicts with pb-ext's built-in functionality.
+</Warning>
+
+## Dashboard Routes
+
+### pb-ext Dashboard
+
+| Method | Path | Auth | Description |
+|--------|------|------|------------|
+| `GET` | `/_/_` | Superuser | pb-ext health, analytics & jobs dashboard |
+
+**Purpose**: Serves the main pb-ext monitoring dashboard.
+
+**Features**:
+- System health metrics (CPU, memory, disk, network)
+- Request analytics and visitor stats
+- Cron job management and execution history
+- Runtime configuration
+
+**Access**:
+```bash
+http://127.0.0.1:8090/_/_
+```
+
+**Authentication**: Requires PocketBase superuser (admin) authentication. Redirects to `/_/` login if not authenticated.
+
+## Cron Job API Routes
+
+<Note>
+  All cron routes require **superuser authentication**.
+</Note>
+
+### List Jobs
+
+```http
+GET /api/cron/jobs
+```
+
+**Response**:
+```json
+[
+  {
+    "id": "myJob",
+    "name": "Data Sync Job",
+    "description": "Syncs data from external API",
+    "schedule": "0 */6 * * *",
+    "is_system": false,
+    "next_run": "2026-03-05T06:00:00Z",
+    "last_run": "2026-03-05T00:00:00Z",
+    "last_status": "success"
+  },
+  {
+    "id": "__pbExtLogClean__",
+    "name": "System Log Cleanup",
+    "description": "Purge old job logs",
+    "schedule": "0 0 * * *",
+    "is_system": true,
+    "next_run": "2026-03-05T00:00:00Z"
+  }
+]
+```
+
+### Trigger Job Manually
+
+```http
+POST /api/cron/jobs/{id}/run
+```
+
+**Example**:
+```bash
+curl -X POST http://127.0.0.1:8090/api/cron/jobs/myJob/run \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+```
+
+**Response**:
+```json
+{
+  "message": "Job triggered successfully",
+  "job_id": "myJob"
+}
+```
+
+### Remove Job
+
+```http
+DELETE /api/cron/jobs/{id}
+```
+
+**Example**:
+```bash
+curl -X DELETE http://127.0.0.1:8090/api/cron/jobs/myJob \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+```
+
+**Response**:
+```json
+{
+  "message": "Job removed successfully",
+  "job_id": "myJob"
+}
+```
+
+<Warning>
+  Cannot remove system jobs (prefixed with `__pbExt`). Attempting to do so returns an error.
+</Warning>
+
+### Get Scheduler Status
+
+```http
+GET /api/cron/status
+```
+
+**Response**:
+```json
+{
+  "running": true,
+  "jobs_count": 5,
+  "timezone": "UTC",
+  "uptime_seconds": 86400
+}
+```
+
+### Update Timezone
+
+```http
+POST /api/cron/config/timezone
+```
+
+**Request Body**:
+```json
+{
+  "timezone": "America/New_York"
+}
+```
+
+**Response**:
+```json
+{
+  "message": "Timezone updated successfully",
+  "timezone": "America/New_York"
+}
+```
+
+### Get Job Logs (Paginated)
+
+```http
+GET /api/cron/logs?page=1&perPage=20
+```
+
+**Query Parameters**:
+- `page` (default: 1)
+- `perPage` (default: 20, max: 100)
+- `sort` (default: `-start_time`)
+
+**Response**:
+```json
+{
+  "page": 1,
+  "perPage": 20,
+  "totalPages": 5,
+  "totalItems": 93,
+  "items": [
+    {
+      "id": "abc123",
+      "job_id": "myJob",
+      "job_name": "Data Sync Job",
+      "start_time": "2026-03-05T00:00:00Z",
+      "end_time": "2026-03-05T00:02:34Z",
+      "duration_ms": 154000,
+      "status": "success",
+      "output": "[{\"level\":\"info\",\"message\":\"Synced 150 records\"}]"
+    }
+  ]
+}
+```
+
+### Get Logs for Specific Job
+
+```http
+GET /api/cron/logs/{job_id}?page=1&perPage=20
+```
+
+**Response**: Same format as paginated logs, filtered to the specified job.
+
+### Get Log Analytics
+
+```http
+GET /api/cron/logs/analytics
+```
+
+**Response**:
+```json
+{
+  "total_executions": 1250,
+  "success_count": 1180,
+  "failed_count": 70,
+  "success_rate": 94.4,
+  "avg_duration_ms": 3450,
+  "by_job": [
+    {
+      "job_id": "myJob",
+      "executions": 500,
+      "success_count": 475,
+      "failed_count": 25,
+      "avg_duration_ms": 2100
+    }
+  ]
+}
+```
+
+## API Documentation Routes
+
+### List API Versions
+
+```http
+GET /api/docs/versions
+```
+
+**Response**:
+```json
+[
+  {
+    "version": "v1",
+    "title": "My API v1",
+    "description": "Stable production API",
+    "status": "stable",
+    "docs_url": "/api/docs/v1",
+    "swagger_url": "/api/docs/v1/swagger"
+  },
+  {
+    "version": "v2",
+    "title": "My API v2",
+    "description": "Beta testing",
+    "status": "beta",
+    "docs_url": "/api/docs/v2",
+    "swagger_url": "/api/docs/v2/swagger"
+  }
+]
+```
+
+### Get Version Metadata
+
+```http
+GET /api/docs/v{n}
+```
+
+**Example**: `GET /api/docs/v1`
+
+**Response**:
+```json
+{
+  "version": "1.0.0",
+  "title": "My API",
+  "description": "Production API",
+  "endpoints_count": 24,
+  "openapi_spec_url": "/api/docs/v1/openapi.json",
+  "swagger_ui_url": "/api/docs/v1/swagger"
+}
+```
+
+### Get OpenAPI Spec
+
+```http
+GET /api/docs/v{n}/openapi.json
+```
+
+**Example**: `GET /api/docs/v1/openapi.json`
+
+**Response**: Full OpenAPI 3.0.3 JSON spec
+
+**Content-Type**: `application/json`
+
+### Swagger UI
+
+```http
+GET /api/docs/v{n}/swagger
+```
+
+**Example**: `GET /api/docs/v1/swagger`
+
+**Purpose**: Serves interactive Swagger UI for exploring and testing API endpoints.
+
+**Features**:
+- Try-it-out functionality
+- Dark mode by default (SwaggerDark theme)
+- Authentication support
+- Request/response examples
+
+**Access Control**: Controlled by `PublicSwagger` in `APIDocsConfig`:
+```go
+config := &api.APIDocsConfig{
+    PublicSwagger: true,  // public access
+    // PublicSwagger: false, // requires superuser auth
+}
+```
+
+### Debug AST Endpoint
+
+```http
+GET /api/docs/debug/ast
+```
+
+**Purpose**: Returns full AST parser state for debugging.
+
+**Authentication**: Requires superuser auth.
+
+**Response**:
+```json
+{
+  "structs": {
+    "CreateTodoRequest": { ... },
+    "Todo": { ... }
+  },
+  "handlers": {
+    "createTodoHandler": { ... },
+    "getTodosHandler": { ... }
+  },
+  "endpoints_by_version": {
+    "v1": [ ... ]
+  },
+  "component_schemas": { ... },
+  "openapi_output": { ... }
+}
+```
+
+**Use Cases**:
+- Debugging why handler metadata isn't detected
+- Inspecting generated schemas
+- Verifying parameter extraction
+- Troubleshooting OpenAPI generation
+
+## Route Registration Order
+
+pb-ext registers its routes during the `OnServe` event. To avoid conflicts:
+
+**✅ Good**: Register your routes in the same event
+```go
+app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+    e.Router.GET("/api/v1/todos", getTodosHandler)
+    return e.Next()
+})
+```
+
+**❌ Bad**: Register routes at reserved paths
+```go
+app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+    e.Router.GET("/_/_", myCustomHandler) // CONFLICT!
+    return e.Next()
+})
+```
+
+## Path Conflicts
+
+<Warning>
+  Do NOT register routes at these path prefixes:
+</Warning>
+
+- `/_/_` — pb-ext dashboard
+- `/api/cron/*` — Cron management API
+- `/api/docs/*` — OpenAPI documentation
+
+### Example Conflicts
+
+```go
+// ❌ These will conflict:
+e.Router.GET("/_/_", handler)
+e.Router.GET("/api/cron/status", handler)
+e.Router.GET("/api/docs/versions", handler)
+
+// ✅ These are safe:
+e.Router.GET("/api/v1/todos", handler)
+e.Router.GET("/api/v2/users", handler)
+e.Router.GET("/custom/path", handler)
+```
+
+## Middleware on Reserved Routes
+
+pb-ext's reserved routes have their own middleware chains. You cannot bind middleware to these routes.
+
+**Example** (this has no effect):
+```go
+// This middleware won't be called for pb-ext routes
+app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+    e.Router.Use(myMiddleware) // Applied to all routes
+    return e.Next()
+})
+```
+
+To apply middleware to your own routes only:
+```go
+app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+    // Create route group
+    api := e.Router.Group("/api/v1")
+    api.Use(myMiddleware) // Only applies to /api/v1/* routes
+    
+    api.GET("/todos", getTodosHandler)
+    return e.Next()
+})
+```
+
+## Authentication Requirements
+
+| Route Prefix | Auth Type | Fallback |
+|--------------|-----------|----------|
+| `/_/_` | Superuser | Redirect to `/_/` login |
+| `/api/cron/*` | Superuser | 401 Unauthorized |
+| `/api/docs/versions` | None | Public |
+| `/api/docs/debug/ast` | Superuser | 401 Unauthorized |
+| `/api/docs/v{n}/openapi.json` | None | Public |
+| `/api/docs/v{n}/swagger` | Configurable | Based on `PublicSwagger` |
+
+## Customizing Documentation Routes
+
+To disable or customize API docs routes:
+
+```go
+config := &api.APIDocsConfig{
+    Enabled: false, // Disables all /api/docs/* routes
+}
+```
+
+To use a custom base path:
+```go
+// Not directly supported — use reverse proxy
+# nginx.conf
+location /custom-docs/ {
+    proxy_pass http://localhost:8090/api/docs/;
+}
+```
+
+## Health Check Endpoint
+
+While not strictly "reserved," pb-ext registers:
+
+```http
+GET /health
+```
+
+**Response**:
+```json
+{
+  "status": "healthy",
+  "uptime_seconds": 86400,
+  "total_requests": 15234,
+  "active_connections": 42
+}
+```
+
+**Purpose**: Load balancer health checks.
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Avoid Path Collisions" icon="route">
+    Check reserved paths before registering your routes. Use versioned prefixes like `/api/v1/*`.
+  </Card>
+  <Card title="Don't Override" icon="ban">
+    Never attempt to override pb-ext routes. They're registered with high priority.
+  </Card>
+  <Card title="Use Route Groups" icon="layer-group">
+    Group your routes under a common prefix to avoid conflicts and simplify middleware.
+  </Card>
+  <Card title="Test in Dev" icon="vial">
+    Verify your routes work alongside pb-ext routes during development.
+  </Card>
+</CardGroup>
+
+## Further Reading
+
+- [Reserved Collections](/advanced/reserved-collections) - System collections
+- [Middleware](/advanced/middleware) - Custom middleware patterns
+- [Spec Generation](/advanced/spec-generation) - OpenAPI spec generation

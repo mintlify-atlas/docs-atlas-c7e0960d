@@ -1,122 +1,144 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "pb-ext",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#74d7ed",
+    "light": "#74d7ed",
+    "dark": "#38484e"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "https://media.brand.dev/2aef90ce-adda-4d91-ad4a-164e4fc88755.png",
+  "logo": {
+    "light": "https://media.brand.dev/b603d867-8e1f-427b-ad3a-4aaa28b216c7.svg",
+    "dark": "https://media.brand.dev/b603d867-8e1f-427b-ad3a-4aaa28b216c7.svg"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/magooney-loon/pb-ext"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/magooney-loon/pb-ext"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Getting Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "installation"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "core/architecture",
+              "core/server-lifecycle",
+              "core/configuration"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "API Documentation",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "api/overview",
+              "api/openapi-system",
+              "api/versioned-routing",
+              "api/route-registration",
+              "api/annotations"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Features",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "features/cron-jobs",
+              "features/analytics",
+              "features/monitoring",
+              "features/logging",
+              "features/dashboard"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/ast-parsing",
+              "advanced/spec-generation",
+              "advanced/reserved-collections",
+              "advanced/reserved-routes",
+              "advanced/middleware"
+            ]
+          },
+          {
+            "group": "CLI Tools",
+            "pages": [
+              "cli/pb-cli",
+              "cli/commands",
+              "cli/build-pipeline"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/production",
+              "deployment/frontend",
+              "deployment/environment"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Server",
             "pages": [
-              "api-reference/introduction"
+              "reference/server",
+              "reference/options"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "API System",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "reference/api-version-manager",
+              "reference/versioned-router",
+              "reference/spec-generator"
+            ]
+          },
+          {
+            "group": "Jobs",
+            "pages": [
+              "reference/job-manager",
+              "reference/execution-logger"
+            ]
+          },
+          {
+            "group": "Logging",
+            "pages": [
+              "reference/logging",
+              "reference/recovery"
+            ]
+          },
+          {
+            "group": "Analytics",
+            "pages": [
+              "reference/analytics-collector",
+              "reference/analytics-storage"
+            ]
+          },
+          {
+            "group": "Monitoring",
+            "pages": [
+              "reference/system-metrics"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

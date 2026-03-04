@@ -1,0 +1,459 @@
+---
+title: Logging
+description: Structured logging with request middleware and trace IDs
+---
+
+## Overview
+
+The logging system provides structured logging using PocketBase's logger with automatic request tracking, trace ID generation, and panic recovery.
+
+## Functions
+
+### SetupLogging
+
+```go
+func SetupLogging(srv *server.Server)
+```
+
+Configures logging and request middleware for the server.
+
+<ParamField path="srv" type="*server.Server" required>
+  Server instance to configure
+</ParamField>
+
+**Location:** `core/logging/logging.go:118`
+
+**Features:**
+1. Creates application logger with common fields (PID, start time)
+2. Logs application startup and shutdown events
+3. Sets up request middleware for all HTTP requests
+4. Generates unique trace IDs for each request
+5. Tracks request metrics (duration, status, rate)
+6. Excludes common static file requests from logs
+7. Sets up error handler and panic recovery
+
+**Example:**
+```go
+srv := server.New(
+    server.WithPocketbase(app),
+    server.InDeveloperMode(),
+)
+
+logging.SetupLogging(srv)
+```
+
+### SetupRecovery
+
+```go
+func SetupRecovery(app core.App, e *core.ServeEvent)
+```
+
+Configures panic recovery middleware.
+
+<ParamField path="app" type="core.App" required>
+  PocketBase application
+</ParamField>
+
+<ParamField path="e" type="*core.ServeEvent" required>
+  ServeEvent to bind recovery middleware
+</ParamField>
+
+**Location:** `core/logging/logging.go:227`
+
+**Example:**
+```go
+app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+    logging.SetupRecovery(app, e)
+    return e.Next()
+})
+```
+
+## Context Logging
+
+### InfoWithContext
+
+```go
+func InfoWithContext(
+    ctx context.Context,
+    app core.App,
+    message string,
+    data map[string]interface{},
+)
+```
+
+Logs an info message with context data.
+
+<ParamField path="ctx" type="context.Context">
+  Request context (optional, for request ID extraction)
+</ParamField>
+
+<ParamField path="app" type="core.App" required>
+  PocketBase application
+</ParamField>
+
+<ParamField path="message" type="string" required>
+  Log message
+</ParamField>
+
+<ParamField path="data" type="map[string]interface{}" required>
+  Additional structured data
+</ParamField>
+
+**Location:** `core/logging/logging.go:75`
+
+**Example:**
+```go
+logging.InfoWithContext(ctx, app, "User login successful", map[string]interface{}{
+    "user_id": user.ID,
+    "method": "email",
+    "ip": clientIP,
+})
+```
+
+### ErrorWithContext
+
+```go
+func ErrorWithContext(
+    ctx context.Context,
+    app core.App,
+    message string,
+    err error,
+    data map[string]any,
+)
+```
+
+Logs an error message with context data.
+
+<ParamField path="ctx" type="context.Context">
+  Request context (optional)
+</ParamField>
+
+<ParamField path="app" type="core.App" required>
+  PocketBase application
+</ParamField>
+
+<ParamField path="message" type="string" required>
+  Error message
+</ParamField>
+
+<ParamField path="err" type="error" required>
+  Error object
+</ParamField>
+
+<ParamField path="data" type="map[string]any" required>
+  Additional structured data
+</ParamField>
+
+**Location:** `core/logging/logging.go:94`
+
+**Example:**
+```go
+logging.ErrorWithContext(ctx, app, "Failed to process payment", err, map[string]any{
+    "user_id": user.ID,
+    "amount": amount,
+    "payment_method": method,
+})
+```
+
+## Log Levels
+
+```go
+type LogLevel int
+
+const (
+    Debug LogLevel = -4  // Debug level
+    Info  LogLevel = 0   // Info level
+    Warn  LogLevel = 4   // Warning level
+    Error LogLevel = 8   // Error level
+)
+```
+
+**Location:** `core/logging/logging.go:18`
+
+## Log Context
+
+```go
+type LogContext struct {
+    TraceID    string
+    StartTime  time.Time
+    Method     string
+    Path       string
+    StatusCode int
+    Duration   time.Duration
+    UserAgent  string
+    IP         string
+}
+```
+
+**Location:** `core/logging/logging.go:48`
+
+## Request Middleware Behavior
+
+### Trace ID Generation
+
+Every request receives a unique 18-character trace ID:
+
+```go
+traceID := security.RandomString(18)
+c.Request.Header.Set(TraceIDHeader, traceID)
+c.Response.Header().Set(TraceIDHeader, traceID)
+```
+
+**Header:** `X-Trace-ID`
+
+**Example:**
+```bash
+curl -i http://localhost:8090/api/health
+HTTP/1.1 200 OK
+X-Trace-ID: 7kj9m2n4p6q8r0s2t4
+```
+
+### Request Tracking
+
+The middleware tracks:
+- Request method
+- Request path
+- Status code
+- Duration
+- User agent
+- Remote IP
+- Content length
+- Request rate (requests per second)
+
+**Location:** `core/logging/logging.go:168`
+
+### Excluded Paths
+
+These paths are excluded from logging and metrics:
+
+- `/service-worker.js`
+- `/favicon.ico`
+- `/manifest.json`
+- `/robots.txt`
+- Files ending in: `.map`, `.ico`, `.webmanifest`
+
+**Location:** `core/logging/logging.go:60`
+
+## Complete Examples
+
+### Basic Setup
+
+```go
+package main
+
+import (
+    "github.com/magooney-loon/pb-ext/core"
+    "github.com/magooney-loon/pb-ext/core/logging"
+    "github.com/magooney-loon/pb-ext/core/server"
+)
+
+func main() {
+    srv := server.New(
+        server.WithPocketbase(pocketbase.New()),
+        server.InDeveloperMode(),
+    )
+    
+    // Setup structured logging
+    logging.SetupLogging(srv)
+    
+    // Setup routes
+    srv.App().OnServe().BindFunc(func(e *core.ServeEvent) error {
+        e.Router.GET("/api/health", healthHandler)
+        return e.Next()
+    })
+    
+    srv.Start()
+}
+```
+
+### Handler with Context Logging
+
+```go
+func processOrderHandler(e *core.RequestEvent) error {
+    var order Order
+    if err := e.BindBody(&order); err != nil {
+        return err
+    }
+    
+    ctx := e.Request.Context()
+    
+    logging.InfoWithContext(ctx, e.App, "Processing order", map[string]interface{}{
+        "order_id": order.ID,
+        "user_id": e.Auth.Id,
+        "amount": order.Amount,
+    })
+    
+    if err := processOrder(order); err != nil {
+        logging.ErrorWithContext(ctx, e.App, "Order processing failed", err, map[string]any{
+            "order_id": order.ID,
+            "step": "payment",
+        })
+        return err
+    }
+    
+    logging.InfoWithContext(ctx, e.App, "Order completed", map[string]interface{}{
+        "order_id": order.ID,
+        "duration": time.Since(order.CreatedAt),
+    })
+    
+    return e.JSON(200, order)
+}
+```
+
+### Custom Middleware with Logging
+
+```go
+func loggingMiddleware(app core.App) *hook.Handler[*core.RequestEvent] {
+    return &hook.Handler[*core.RequestEvent]{
+        Func: func(e *core.RequestEvent) error {
+            start := time.Now()
+            traceID := e.Request.Header.Get(logging.TraceIDHeader)
+            
+            // Log request start
+            logging.InfoWithContext(e.Request.Context(), app, "Request started", map[string]interface{}{
+                "trace_id": traceID,
+                "method": e.Request.Method,
+                "path": e.Request.URL.Path,
+            })
+            
+            // Process request
+            err := e.Next()
+            
+            // Log request completion
+            duration := time.Since(start)
+            if err != nil {
+                logging.ErrorWithContext(e.Request.Context(), app, "Request failed", err, map[string]any{
+                    "trace_id": traceID,
+                    "duration": duration,
+                })
+            } else {
+                logging.InfoWithContext(e.Request.Context(), app, "Request completed", map[string]interface{}{
+                    "trace_id": traceID,
+                    "duration": duration,
+                })
+            }
+            
+            return err
+        },
+    }
+}
+```
+
+### Structured Error Logging
+
+```go
+func authenticateUser(e *core.RequestEvent) error {
+    ctx := e.Request.Context()
+    
+    var creds Credentials
+    if err := e.BindBody(&creds); err != nil {
+        logging.ErrorWithContext(ctx, e.App, "Invalid credentials format", err, map[string]any{
+            "error_type": "validation",
+        })
+        return err
+    }
+    
+    user, err := findUserByEmail(creds.Email)
+    if err != nil {
+        logging.ErrorWithContext(ctx, e.App, "User lookup failed", err, map[string]any{
+            "email": creds.Email,
+            "error_type": "database",
+        })
+        return err
+    }
+    
+    if !user.ValidatePassword(creds.Password) {
+        logging.InfoWithContext(ctx, e.App, "Failed login attempt", map[string]interface{}{
+            "user_id": user.ID,
+            "reason": "invalid_password",
+            "ip": e.Request.RemoteAddr,
+        })
+        return errors.New("invalid credentials")
+    }
+    
+    logging.InfoWithContext(ctx, e.App, "User authenticated", map[string]interface{}{
+        "user_id": user.ID,
+        "method": "password",
+    })
+    
+    return e.JSON(200, user)
+}
+```
+
+## Log Output Examples
+
+### Application Startup
+
+```json
+{
+  "time": "2024-03-04T12:00:00Z",
+  "level": "INFO",
+  "msg": "Application starting up",
+  "pid": 12345,
+  "start_time": "2024-03-04T12:00:00Z",
+  "event": "app_startup"
+}
+```
+
+### Request Log
+
+```json
+{
+  "time": "2024-03-04T12:00:05Z",
+  "level": "DEBUG",
+  "msg": "Request processed",
+  "group": "request",
+  "trace_id": "7kj9m2n4p6q8r0s2t4",
+  "method": "GET",
+  "path": "/api/users",
+  "status": "200 [OK]",
+  "duration": "45.2ms",
+  "ip": "192.168.1.100",
+  "user_agent": "Mozilla/5.0...",
+  "content_length": 0,
+  "request_rate": 12.5,
+  "event": "http_request"
+}
+```
+
+### Application Shutdown
+
+```json
+{
+  "time": "2024-03-04T18:00:00Z",
+  "level": "INFO",
+  "msg": "Application shutting down",
+  "event": "app_shutdown",
+  "is_restart": false,
+  "uptime": "6h0m0s",
+  "total_requests": 15420,
+  "avg_request_time_ms": 42.3
+}
+```
+
+## Constants
+
+```go
+const (
+    TraceIDHeader = "X-Trace-ID"
+    RequestIDKey  = "request_id"
+)
+```
+
+**Location:** `core/logging/logging.go:27`
+
+## Best Practices
+
+1. **Use Context Logging**: Always use `InfoWithContext` and `ErrorWithContext` in handlers
+2. **Include Trace IDs**: Trace IDs help correlate logs across distributed operations
+3. **Structured Data**: Use key-value pairs instead of string interpolation
+4. **Error Context**: Always include relevant context when logging errors
+5. **Avoid PII**: Don't log passwords, tokens, or sensitive personal information
+6. **Consistent Keys**: Use consistent field names across logs (`user_id`, not `userId` or `user`)
+7. **Log Levels**: Use appropriate levels (Debug for verbose, Info for flow, Error for problems)
+
+## Related
+
+- [Error Handler](/reference/recovery) - Structured error handling
+- [Recovery](/reference/recovery) - Panic recovery middleware
+- [Monitoring](/reference/system-metrics) - Request metrics and system stats

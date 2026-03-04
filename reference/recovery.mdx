@@ -1,0 +1,407 @@
+---
+title: Recovery
+description: Panic recovery middleware with error handling
+---
+
+## Overview
+
+The recovery system provides automatic panic recovery for HTTP requests with proper error responses and detailed logging.
+
+## Functions
+
+### RecoverFromPanic
+
+```go
+func RecoverFromPanic(app core.App, c *core.RequestEvent)
+```
+
+Recovers from panics and returns a structured 500 error response.
+
+<ParamField path="app" type="core.App" required>
+  PocketBase application for logging
+</ParamField>
+
+<ParamField path="c" type="*core.RequestEvent" required>
+  Request event where panic occurred
+</ParamField>
+
+**Location:** `core/logging/error_handler.go:152`
+
+**Behavior:**
+1. Captures panic with `recover()`
+2. Logs panic with trace ID and stack trace
+3. Excludes static file requests from panic logs
+4. Returns HTML error page for browsers
+5. Returns JSON error response for API requests
+
+**Example Usage:**
+```go
+app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+    e.Router.BindFunc(func(c *core.RequestEvent) error {
+        defer func() {
+            logging.RecoverFromPanic(app, c)
+        }()
+        
+        return c.Next()
+    })
+    return e.Next()
+})
+```
+
+### SetupRecovery
+
+```go
+func SetupRecovery(app core.App, e *core.ServeEvent)
+```
+
+Configures global panic recovery middleware.
+
+<ParamField path="app" type="core.App" required>
+  PocketBase application
+</ParamField>
+
+<ParamField path="e" type="*core.ServeEvent" required>
+  ServeEvent to bind recovery middleware
+</ParamField>
+
+**Location:** `core/logging/logging.go:227`
+
+**Example:**
+```go
+app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+    logging.SetupRecovery(app, e)
+    return e.Next()
+})
+```
+
+## Error Response Type
+
+```go
+type ErrorResponse struct {
+    Status     string `json:"status"`
+    Message    string `json:"message"`
+    Type       string `json:"type,omitempty"`
+    Operation  string `json:"operation,omitempty"`
+    StatusCode int    `json:"status_code"`
+    TraceID    string `json:"trace_id"`
+    Timestamp  string `json:"timestamp"`
+}
+```
+
+**Location:** `core/logging/error_handler.go:20`
+
+## Response Formats
+
+### JSON Response (API Routes)
+
+```json
+{
+    "status": "Internal Server Error",
+    "message": "A panic occurred while processing your request",
+    "type": "panic",
+    "operation": "request_handler",
+    "status_code": 500,
+    "trace_id": "7kj9m2n4p6q8r0s2t4",
+    "timestamp": "2024-03-04T12:00:00Z"
+}
+```
+
+### HTML Response (Browser Requests)
+
+Returns a styled HTML error page with:
+- Error status and message
+- Error type and operation
+- Trace ID for debugging
+- Timestamp
+
+## Content Negotiation
+
+The recovery system automatically detects the appropriate response format:
+
+**API Routes** (`/api/*`):
+- Always return JSON
+- Regardless of Accept header or User-Agent
+
+**Browser Requests**:
+- Return HTML for browsers (Mozilla, Chrome, Safari, Firefox)
+- Return HTML when `Accept: text/html` header is present
+- Return JSON for all other clients
+
+**Location:** `core/logging/error_handler.go:179`
+
+## Panic Log Format
+
+```json
+{
+    "time": "2024-03-04T12:00:00Z",
+    "level": "ERROR",
+    "msg": "Panic recovered",
+    "event": "panic",
+    "trace_id": "7kj9m2n4p6q8r0s2t4",
+    "error": "runtime error: invalid memory address or nil pointer dereference",
+    "path": "/api/users/123",
+    "method": "GET",
+    "stack": "goroutine 42 [running]:\nruntime/debug.Stack()\n\t/usr/local/go/src/runtime/debug/stack.go:24 +0x65\n..."
+}
+```
+
+## Complete Examples
+
+### Global Recovery Setup
+
+```go
+package main
+
+import (
+    "github.com/magooney-loon/pb-ext/core/logging"
+    "github.com/pocketbase/pocketbase/core"
+)
+
+func main() {
+    app := pocketbase.New()
+    
+    app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+        // Setup panic recovery for all routes
+        logging.SetupRecovery(app, e)
+        
+        // Register routes
+        e.Router.GET("/api/users", listUsersHandler)
+        
+        return e.Next()
+    })
+    
+    app.Start()
+}
+```
+
+### Manual Recovery in Handler
+
+```go
+func riskyHandler(e *core.RequestEvent) error {
+    defer func() {
+        if r := recover(); r != nil {
+            logging.RecoverFromPanic(e.App, e)
+        }
+    }()
+    
+    // Risky operation that might panic
+    data := riskyOperation()
+    
+    return e.JSON(200, data)
+}
+```
+
+### Custom Recovery with Cleanup
+
+```go
+func handlerWithCleanup(e *core.RequestEvent) error {
+    resource := acquireResource()
+    
+    defer func() {
+        // Cleanup even on panic
+        resource.Release()
+        
+        // Recover from panic
+        if r := recover(); r != nil {
+            e.App.Logger().Error("Panic during resource processing",
+                "error", r,
+                "resource_id", resource.ID,
+            )
+            logging.RecoverFromPanic(e.App, e)
+        }
+    }()
+    
+    // Process resource
+    result := processResource(resource)
+    
+    return e.JSON(200, result)
+}
+```
+
+### Recovery with Alerting
+
+```go
+func setupRecoveryWithAlerting(app core.App) {
+    app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+        e.Router.BindFunc(func(c *core.RequestEvent) error {
+            defer func() {
+                if r := recover(); r != nil {
+                    traceID := c.Request.Header.Get(logging.TraceIDHeader)
+                    
+                    // Log panic
+                    app.Logger().Error("Panic recovered",
+                        "trace_id", traceID,
+                        "error", r,
+                    )
+                    
+                    // Send alert (non-blocking)
+                    go sendPanicAlert(traceID, r)
+                    
+                    // Recover and send error response
+                    logging.RecoverFromPanic(app, c)
+                }
+            }()
+            
+            return c.Next()
+        })
+        return e.Next()
+    })
+}
+
+func sendPanicAlert(traceID string, panicValue interface{}) {
+    // Send to monitoring service
+    alerting.Send(alerting.Alert{
+        Severity: "critical",
+        Title:    "Application Panic",
+        Message:  fmt.Sprintf("Panic: %v", panicValue),
+        TraceID:  traceID,
+    })
+}
+```
+
+### Testing Panic Recovery
+
+```go
+func TestPanicRecovery(t *testing.T) {
+    app := pocketbase.New()
+    
+    app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+        logging.SetupRecovery(app, e)
+        
+        e.Router.GET("/panic", func(c *core.RequestEvent) error {
+            panic("intentional panic for testing")
+        })
+        
+        return e.Next()
+    })
+    
+    // Start server in test mode
+    go app.Start()
+    defer app.ResetBootstrapState()
+    
+    // Make request that triggers panic
+    resp, err := http.Get("http://localhost:8090/panic")
+    if err != nil {
+        t.Fatal(err)
+    }
+    defer resp.Body.Close()
+    
+    // Should return 500, not crash
+    if resp.StatusCode != http.StatusInternalServerError {
+        t.Errorf("Expected 500, got %d", resp.StatusCode)
+    }
+    
+    // Should include trace ID
+    traceID := resp.Header.Get("X-Trace-ID")
+    if traceID == "" {
+        t.Error("Missing trace ID in response")
+    }
+}
+```
+
+## Excluded Paths
+
+Panic logs are suppressed for these paths to reduce noise:
+
+- `/service-worker.js`
+- `/favicon.ico`
+- `/manifest.json`
+- `/robots.txt`
+- Files ending in: `.map`, `.ico`, `.webmanifest`
+
+**Location:** `core/logging/error_handler.go:157`
+
+## Stack Trace Capture
+
+The recovery system captures full stack traces using `runtime/debug.Stack()`:
+
+```go
+stack := string(debug.Stack())
+app.Logger().Error("Panic recovered",
+    "trace_id", traceID,
+    "error", r,
+    "stack", stack,
+)
+```
+
+**Location:** `core/logging/error_handler.go:164`
+
+## Best Practices
+
+1. **Global Setup**: Use `SetupRecovery()` once during app initialization
+2. **Don't Suppress**: Let panics propagate to recovery middleware, don't silently recover
+3. **Log Context**: Include trace IDs and request context in panic logs
+4. **Resource Cleanup**: Use deferred cleanup before panic recovery
+5. **Monitor Panics**: Set up alerting for production panics
+6. **Fix Root Cause**: Panics indicate bugs - fix them, don't just recover
+7. **Testing**: Test panic scenarios to ensure graceful degradation
+
+## Common Panic Scenarios
+
+### Nil Pointer Dereference
+
+```go
+func handlerWithNilCheck(e *core.RequestEvent) error {
+    user := getUserFromContext(e) // May return nil
+    
+    // This would panic if user is nil
+    // return e.JSON(200, user.Profile)
+    
+    // Safe approach
+    if user == nil {
+        return e.JSON(404, map[string]string{
+            "error": "user not found",
+        })
+    }
+    
+    return e.JSON(200, user.Profile)
+}
+```
+
+### Index Out of Bounds
+
+```go
+func handlerWithBoundsCheck(e *core.RequestEvent) error {
+    items := getItems()
+    
+    // This would panic if items is empty
+    // firstItem := items[0]
+    
+    // Safe approach
+    if len(items) == 0 {
+        return e.JSON(404, map[string]string{
+            "error": "no items found",
+        })
+    }
+    
+    firstItem := items[0]
+    return e.JSON(200, firstItem)
+}
+```
+
+### Type Assertion
+
+```go
+func handlerWithTypeCheck(e *core.RequestEvent) error {
+    value := getValueFromCache("key")
+    
+    // This would panic if value is not a string
+    // str := value.(string)
+    
+    // Safe approach
+    str, ok := value.(string)
+    if !ok {
+        return e.JSON(500, map[string]string{
+            "error": "invalid cache value type",
+        })
+    }
+    
+    return e.JSON(200, map[string]string{"value": str})
+}
+```
+
+## Related
+
+- [Logging](/reference/logging) - Structured logging system
+- [Error Handler](/reference/recovery) - Error handling middleware
+- [Monitoring](/reference/system-metrics) - System health monitoring

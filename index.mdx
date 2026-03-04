@@ -1,97 +1,293 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "pb-ext Documentation"
+description: "Enhanced PocketBase framework with auto-generated OpenAPI docs, cron job tracking, system monitoring, structured logging, and visitor analytics"
+mode: "custom"
 ---
 
-## Setting up
+<div className="relative overflow-hidden bg-gradient-to-br from-[#38484e] via-[#2a3640] to-[#1a1d27] dark:from-[#38484e] dark:via-[#2a3640] dark:to-[#1a1d27] py-20 lg:py-24">
+  <div className="absolute inset-0 opacity-20">
+    <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGRlZnM+PHBhdHRlcm4gaWQ9ImdyaWQiIHdpZHRoPSI2MCIgaGVpZ2h0PSI2MCIgcGF0dGVyblVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+PHBhdGggZD0iTSAxMCAwIEwgMCAwIDAgMTAiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIwLjUiLz48L3BhdHRlcm4+PC9kZWZzPjxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbGw9InVybCgjZ3JpZCkiLz48L3N2Zz4=')] opacity-30"></div>
+  </div>
+  
+  <div className="relative max-w-7xl mx-auto px-6 lg:px-8">
+    <div className="grid lg:grid-cols-12 gap-12 items-center">
+      <div className="lg:col-span-7">
+        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-white mb-6 leading-tight">
+          Production-Ready PocketBase Framework
+        </h1>
+        <p className="text-lg sm:text-xl text-gray-200 mb-8 max-w-2xl">
+          Build robust backend applications with auto-generated OpenAPI documentation, real-time monitoring, structured logging, and GDPR-compliant analytics—all built on PocketBase.
+        </p>
+        <div className="flex flex-wrap gap-4">
+          <a
+            href="/quickstart"
+            className="inline-flex items-center px-6 py-3 rounded-lg bg-[#74d7ed] hover:bg-[#5fc3db] text-gray-900 font-semibold transition-colors shadow-lg"
+          >
+            Get Started
+            <svg className="ml-2 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+            </svg>
+          </a>
+          <a
+            href="/api/overview"
+            className="inline-flex items-center px-6 py-3 rounded-lg border-2 border-white/30 bg-white/10 hover:bg-white/20 text-white font-semibold transition-colors backdrop-blur-sm"
+          >
+            Explore API Docs
+          </a>
+        </div>
+      </div>
+      
+      <div className="lg:col-span-5 hidden lg:block">
+        <div className="relative">
+          <div className="absolute inset-0 bg-[#74d7ed]/20 blur-3xl rounded-full"></div>
+          <div className="relative bg-[#1a1d27]/80 backdrop-blur-xl border border-white/10 rounded-2xl p-6 shadow-2xl">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-3 h-3 rounded-full bg-red-500"></div>
+              <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+              <div className="w-3 h-3 rounded-full bg-green-500"></div>
+            </div>
+            <pre className="text-sm text-gray-300 overflow-x-auto"><code>{`package main
 
-Get your documentation site up and running in minutes.
+import (
+    app "github.com/magooney-loon/pb-ext/core"
+    "github.com/pocketbase/pocketbase/core"
+)
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+func main() {
+    srv := app.New(app.InDeveloperMode())
+    app.SetupLogging(srv)
+    
+    srv.App().OnServe().BindFunc(
+        func(e *core.ServeEvent) error {
+            app.SetupRecovery(srv.App(), e)
+            return e.Next()
+        }
+    )
+    
+    srv.Start()
+}`}</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
-## Make it yours
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Quick Start</h2>
+    <p className="text-lg text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+      Get up and running with pb-ext in minutes
+    </p>
+  </div>
 
-Design a docs site that looks great and empowers your users.
+  <Steps>
+    <Step title="Install Go and pb-ext">
+      Make sure you have Go 1.25.7+ installed, then create your project:
+      
+      ```bash
+      mkdir my-pb-project && cd my-pb-project
+      go mod init my-pb-project
+      go get github.com/magooney-loon/pb-ext
+      ```
+    </Step>
+    
+    <Step title="Create your main.go">
+      Set up your server with the basic configuration:
+      
+      ```go cmd/server/main.go
+      package main
 
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
-  </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
-  </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
-  </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
-  </Card>
-</Columns>
+      import (
+          "log"
+          app "github.com/magooney-loon/pb-ext/core"
+          "github.com/pocketbase/pocketbase/core"
+      )
 
-## Create beautiful pages
+      func main() {
+          srv := app.New(app.InDeveloperMode())
+          app.SetupLogging(srv)
 
-Everything you need to create world-class documentation.
+          srv.App().OnServe().BindFunc(func(e *core.ServeEvent) error {
+              app.SetupRecovery(srv.App(), e)
+              return e.Next()
+          })
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+          if err := srv.Start(); err != nil {
+              log.Fatal(err)
+          }
+      }
+      ```
+    </Step>
+    
+    <Step title="Install pb-cli and run">
+      Install the build toolchain and start your server:
+      
+      ```bash
+      go install github.com/magooney-loon/pb-ext/cmd/pb-cli@latest
+      pb-cli --run-only
+      ```
+      
+      <Note>
+        Your server will start at `http://127.0.0.1:8090`. Access the PocketBase admin at `/_/` and the pb-ext dashboard at `/_/_`.
+      </Note>
+    </Step>
+  </Steps>
+</div>
 
-## Need inspiration?
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Key Features</h2>
+    <p className="text-lg text-gray-600 dark:text-gray-400">
+      Everything you need for production-ready backend services
+    </p>
+  </div>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+  <CardGroup cols={2}>
+    <Card title="Auto-Generated API Docs" icon="file-code" href="/api/openapi-system">
+      Generate OpenAPI/Swagger documentation automatically from your Go code using AST parsing—no manual annotations required.
+    </Card>
+    
+    <Card title="Cron Job Management" icon="clock" href="/features/cron-jobs">
+      Schedule and track background jobs with detailed execution logs, statistics, and a built-in management dashboard.
+    </Card>
+    
+    <Card title="System Monitoring" icon="chart-line" href="/features/monitoring">
+      Monitor CPU, memory, disk, network, and runtime metrics in real-time with the built-in dashboard.
+    </Card>
+    
+    <Card title="Structured Logging" icon="list-timeline" href="/features/logging">
+      Track requests with unique trace IDs, capture errors, and integrate seamlessly with your observability stack.
+    </Card>
+    
+    <Card title="Visitor Analytics" icon="chart-bar" href="/features/analytics">
+      GDPR-compliant analytics tracking page views, devices, and browsers without storing personal data.
+    </Card>
+    
+    <Card title="Versioned API Routing" icon="code-branch" href="/api/versioned-routing">
+      Manage multiple API versions simultaneously with isolated routers, schemas, and OpenAPI specs.
+    </Card>
+  </CardGroup>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Explore by Topic</h2>
+    <p className="text-lg text-gray-600 dark:text-gray-400">
+      Deep dive into specific areas of the framework
+    </p>
+  </div>
+
+  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <a href="/core/architecture" className="group block rounded-2xl border border-gray-200 dark:border-[#27272a] hover:border-[#74d7ed] dark:hover:border-[#74d7ed] overflow-hidden transition-colors no-underline bg-white dark:bg-[#1a1d27]">
+      <div className="h-48 bg-gradient-to-br from-[#74d7ed]/20 to-[#38484e]/20 dark:from-[#74d7ed]/10 dark:to-[#38484e]/30 flex items-center justify-center overflow-hidden">
+        <svg className="w-24 h-24 text-[#74d7ed] opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+        </svg>
+      </div>
+      <div className="p-6">
+        <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-2 group-hover:text-[#74d7ed] transition-colors">
+          Core Architecture
+        </h3>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+          Learn how pb-ext wraps PocketBase and understand the server lifecycle, initialization flow, and extension points.
+        </p>
+        <span className="inline-flex items-center text-sm font-medium text-gray-600 dark:text-gray-400 group-hover:text-[#74d7ed] transition-colors">
+          Learn more
+          <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </span>
+      </div>
+    </a>
+
+    <a href="/api/overview" className="group block rounded-2xl border border-gray-200 dark:border-[#27272a] hover:border-[#74d7ed] dark:hover:border-[#74d7ed] overflow-hidden transition-colors no-underline bg-white dark:bg-[#1a1d27]">
+      <div className="h-48 bg-gradient-to-br from-blue-500/20 to-purple-500/20 dark:from-blue-500/10 dark:to-purple-500/10 flex items-center justify-center overflow-hidden">
+        <svg className="w-24 h-24 text-blue-500 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+        </svg>
+      </div>
+      <div className="p-6">
+        <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-2 group-hover:text-[#74d7ed] transition-colors">
+          API Documentation System
+        </h3>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+          Discover how the OpenAPI documentation system uses Go AST parsing to automatically generate comprehensive API specs.
+        </p>
+        <span className="inline-flex items-center text-sm font-medium text-gray-600 dark:text-gray-400 group-hover:text-[#74d7ed] transition-colors">
+          Learn more
+          <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </span>
+      </div>
+    </a>
+
+    <a href="/features/cron-jobs" className="group block rounded-2xl border border-gray-200 dark:border-[#27272a] hover:border-[#74d7ed] dark:hover:border-[#74d7ed] overflow-hidden transition-colors no-underline bg-white dark:bg-[#1a1d27]">
+      <div className="h-48 bg-gradient-to-br from-green-500/20 to-teal-500/20 dark:from-green-500/10 dark:to-teal-500/10 flex items-center justify-center overflow-hidden">
+        <svg className="w-24 h-24 text-green-500 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+      </div>
+      <div className="p-6">
+        <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-2 group-hover:text-[#74d7ed] transition-colors">
+          Background Jobs
+        </h3>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+          Schedule cron jobs with detailed logging, track execution history, and manage jobs through the admin dashboard.
+        </p>
+        <span className="inline-flex items-center text-sm font-medium text-gray-600 dark:text-gray-400 group-hover:text-[#74d7ed] transition-colors">
+          Learn more
+          <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </span>
+      </div>
+    </a>
+
+    <a href="/cli/pb-cli" className="group block rounded-2xl border border-gray-200 dark:border-[#27272a] hover:border-[#74d7ed] dark:hover:border-[#74d7ed] overflow-hidden transition-colors no-underline bg-white dark:bg-[#1a1d27]">
+      <div className="h-48 bg-gradient-to-br from-orange-500/20 to-red-500/20 dark:from-orange-500/10 dark:to-red-500/10 flex items-center justify-center overflow-hidden">
+        <svg className="w-24 h-24 text-orange-500 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+      </div>
+      <div className="p-6">
+        <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-2 group-hover:text-[#74d7ed] transition-colors">
+          CLI Toolchain
+        </h3>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+          Use pb-cli to build your frontend, generate OpenAPI specs, run tests, and create production builds.
+        </p>
+        <span className="inline-flex items-center text-sm font-medium text-gray-600 dark:text-gray-400 group-hover:text-[#74d7ed] transition-colors">
+          Learn more
+          <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </span>
+      </div>
+    </a>
+  </div>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="rounded-2xl bg-gradient-to-br from-[#38484e] to-[#2a3640] dark:from-[#38484e] dark:to-[#1a1d27] border border-white/10 p-8 lg:p-12 text-center">
+    <h2 className="text-3xl font-bold text-white mb-4">Ready to Build?</h2>
+    <p className="text-lg text-gray-200 mb-8 max-w-2xl mx-auto">
+      Start building production-ready backend services with pb-ext. Follow our quickstart guide or explore the API reference.
+    </p>
+    <div className="flex flex-wrap justify-center gap-4">
+      <a
+        href="/quickstart"
+        className="inline-flex items-center px-6 py-3 rounded-lg bg-[#74d7ed] hover:bg-[#5fc3db] text-gray-900 font-semibold transition-colors shadow-lg"
+      >
+        Get Started
+      </a>
+      <a
+        href="/reference/server"
+        className="inline-flex items-center px-6 py-3 rounded-lg border-2 border-white/30 bg-white/10 hover:bg-white/20 text-white font-semibold transition-colors backdrop-blur-sm"
+      >
+        View API Reference
+      </a>
+    </div>
+  </div>
+</div>

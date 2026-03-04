@@ -1,0 +1,458 @@
+---
+title: System Metrics
+description: Collect CPU, memory, disk, network, and runtime statistics
+---
+
+## Overview
+
+The monitoring system collects comprehensive system metrics using the `gopsutil` library. Metrics are cached for 2 seconds to reduce overhead.
+
+## Type Definition
+
+```go
+type SystemStats struct {
+    Hostname           string             `json:"hostname"`
+    Platform           string             `json:"platform"`
+    OS                 string             `json:"os"`
+    KernelVersion      string             `json:"kernel_version"`
+    CPUInfo            []CPUInfo          `json:"cpu_info"`
+    MemoryInfo         MemoryInfo         `json:"memory_info"`
+    DiskTotal          uint64             `json:"disk_total"`
+    DiskUsed           uint64             `json:"disk_used"`
+    DiskFree           uint64             `json:"disk_free"`
+    RuntimeStats       RuntimeStats       `json:"runtime_stats"`
+    ProcessStats       ProcessInfo        `json:"process_stats"`
+    StartTime          time.Time          `json:"start_time"`
+    UptimeSecs         int64              `json:"uptime_secs"`
+    HasTempData        bool               `json:"has_temp_data"`
+    NetworkInterfaces  []NetworkInterface `json:"network_interfaces"`
+    NetworkConnections int                `json:"network_connections"`
+    NetworkBytesSent   uint64             `json:"network_bytes_sent"`
+    NetworkBytesRecv   uint64             `json:"network_bytes_recv"`
+}
+```
+
+**Location:** `core/monitoring/stats.go:18`
+
+## Collection Functions
+
+### CollectSystemStats
+
+```go
+func CollectSystemStats(ctx context.Context, startTime time.Time) (*SystemStats, error)
+```
+
+Gathers all system statistics with context support and caching.
+
+<ParamField path="ctx" type="context.Context" required>
+  Context for cancellation and timeouts
+</ParamField>
+
+<ParamField path="startTime" type="time.Time" required>
+  Application start time (for uptime calculation)
+</ParamField>
+
+**Returns:**
+- `*SystemStats` - Complete system metrics
+- `error` - Aggregated errors from individual collectors (non-fatal)
+
+**Location:** `core/monitoring/stats.go:48`
+
+**Caching:** Results are cached for 2 seconds (`StatsRefreshInterval`)
+
+**Example:**
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+stats, err := monitoring.CollectSystemStats(ctx, serverStartTime)
+if err != nil {
+    // Non-fatal - some metrics may be unavailable
+    log.Printf("Warning: %v", err)
+}
+
+fmt.Printf("CPU Usage: %.1f%%\n", stats.CPUInfo[0].Usage)
+fmt.Printf("Memory Used: %.1fGB\n", float64(stats.MemoryInfo.Used)/1e9)
+```
+
+### CollectSystemStatsWithoutContext
+
+```go
+func CollectSystemStatsWithoutContext(startTime time.Time) (*SystemStats, error)
+```
+
+Convenience wrapper that uses `context.Background()`.
+
+**Location:** `core/monitoring/stats.go:158`
+
+## CPU Metrics
+
+### CPUInfo
+
+```go
+type CPUInfo struct {
+    ModelName   string  `json:"model_name"`
+    Cores       int32   `json:"cores"`
+    Frequency   float64 `json:"frequency_mhz"`
+    Usage       float64 `json:"usage"`
+    Temperature float64 `json:"temperature"`
+}
+```
+
+**Location:** `core/monitoring/cpu.go:12`
+
+### CollectCPUInfoWithContext
+
+```go
+func CollectCPUInfoWithContext(ctx context.Context) ([]CPUInfo, error)
+```
+
+Gathers CPU information including usage and temperature.
+
+**Location:** `core/monitoring/cpu.go:21`
+
+**Example:**
+```go
+cpuInfo, err := monitoring.CollectCPUInfoWithContext(ctx)
+for i, cpu := range cpuInfo {
+    fmt.Printf("CPU %d: %s (%.1f MHz)\n", i, cpu.ModelName, cpu.Frequency)
+    fmt.Printf("  Usage: %.1f%%\n", cpu.Usage)
+    if cpu.Temperature > 0 {
+        fmt.Printf("  Temp: %.1f°C\n", cpu.Temperature)
+    }
+}
+```
+
+### Temperature Detection
+
+```go
+func IsCPUTemp(sensor string) bool
+```
+
+Identifies CPU temperature sensors by checking for common names:
+
+- `coretemp` (Intel)
+- `k10temp` (AMD)
+- `cpu_thermal`, `cpu-thermal`
+- `cpu temperature`
+
+**Location:** `core/monitoring/cpu.go:91`
+
+## Memory Metrics
+
+### MemoryInfo
+
+```go
+type MemoryInfo struct {
+    Total       uint64  `json:"total"`
+    Used        uint64  `json:"used"`
+    Free        uint64  `json:"free"`
+    UsedPercent float64 `json:"used_percent"`
+    SwapTotal   uint64  `json:"swap_total"`
+    SwapUsed    uint64  `json:"swap_used"`
+    SwapPercent float64 `json:"swap_percent"`
+}
+```
+
+**Location:** `core/monitoring/memory.go:9`
+
+### CollectMemoryInfoWithContext
+
+```go
+func CollectMemoryInfoWithContext(ctx context.Context) (MemoryInfo, error)
+```
+
+Gathers memory and swap information.
+
+**Location:** `core/monitoring/memory.go:21`
+
+**Example:**
+```go
+memInfo, err := monitoring.CollectMemoryInfoWithContext(ctx)
+fmt.Printf("Memory: %.1fGB / %.1fGB (%.1f%%)\n",
+    float64(memInfo.Used)/1e9,
+    float64(memInfo.Total)/1e9,
+    memInfo.UsedPercent,
+)
+```
+
+## Network Metrics
+
+### NetworkInterface
+
+```go
+type NetworkInterface struct {
+    Name        string `json:"name"`
+    IPAddress   string `json:"ip_address"`
+    BytesSent   uint64 `json:"bytes_sent"`
+    BytesRecv   uint64 `json:"bytes_recv"`
+    PacketsSent uint64 `json:"packets_sent"`
+    PacketsRecv uint64 `json:"packets_recv"`
+}
+```
+
+**Location:** `core/monitoring/network.go:11`
+
+### NetworkStats
+
+```go
+type NetworkStats struct {
+    Interfaces      []NetworkInterface `json:"interfaces"`
+    ConnectionCount int                `json:"connection_count"`
+    TotalBytesSent  uint64             `json:"total_bytes_sent"`
+    TotalBytesRecv  uint64             `json:"total_bytes_recv"`
+}
+```
+
+**Location:** `core/monitoring/network.go:20`
+
+### CollectNetworkInfoWithContext
+
+```go
+func CollectNetworkInfoWithContext(ctx context.Context) (NetworkStats, error)
+```
+
+Gathers network interface statistics and connection counts.
+
+**Features:**
+- Skips loopback interfaces
+- Skips interfaces without addresses
+- Extracts first non-local IPv4 address
+- Counts all connection types
+
+**Location:** `core/monitoring/network.go:29`
+
+**Example:**
+```go
+netStats, err := monitoring.CollectNetworkInfoWithContext(ctx)
+for _, iface := range netStats.Interfaces {
+    fmt.Printf("%s (%s)\n", iface.Name, iface.IPAddress)
+    fmt.Printf("  Sent: %s\n", formatBytes(iface.BytesSent))
+    fmt.Printf("  Recv: %s\n", formatBytes(iface.BytesRecv))
+}
+fmt.Printf("Active connections: %d\n", netStats.ConnectionCount)
+```
+
+## Runtime Metrics
+
+### RuntimeStats
+
+```go
+type RuntimeStats struct {
+    GoVersion   string `json:"go_version"`
+    NumGoroutine int   `json:"num_goroutine"`
+    NumCPU      int    `json:"num_cpu"`
+    GOMAXPROCS  int    `json:"gomaxprocs"`
+    MemStats    MemStats `json:"mem_stats"`
+}
+
+type MemStats struct {
+    Alloc         uint64  `json:"alloc"`
+    TotalAlloc    uint64  `json:"total_alloc"`
+    Sys           uint64  `json:"sys"`
+    NumGC         uint32  `json:"num_gc"`
+    PauseTotalNs  uint64  `json:"pause_total_ns"`
+    HeapAlloc     uint64  `json:"heap_alloc"`
+    HeapInuse     uint64  `json:"heap_inuse"`
+}
+```
+
+**Location:** `core/monitoring/runtime.go:12`
+
+### CollectRuntimeStats
+
+```go
+func CollectRuntimeStats() RuntimeStats
+```
+
+Gathers Go runtime statistics (goroutines, memory, GC).
+
+**Location:** `core/monitoring/runtime.go:36`
+
+**Example:**
+```go
+runtime := monitoring.CollectRuntimeStats()
+fmt.Printf("Go Version: %s\n", runtime.GoVersion)
+fmt.Printf("Goroutines: %d\n", runtime.NumGoroutine)
+fmt.Printf("Heap Alloc: %.1fMB\n", float64(runtime.MemStats.HeapAlloc)/1e6)
+fmt.Printf("GC Runs: %d\n", runtime.MemStats.NumGC)
+```
+
+## Complete Examples
+
+### Health Check Endpoint
+
+```go
+func healthHandler(e *core.RequestEvent) error {
+    ctx, cancel := context.WithTimeout(e.Request.Context(), 3*time.Second)
+    defer cancel()
+    
+    stats, err := monitoring.CollectSystemStats(ctx, serverStartTime)
+    if err != nil {
+        // Some metrics may be unavailable, but continue
+        log.Printf("Metrics collection warning: %v", err)
+    }
+    
+    health := map[string]interface{}{
+        "status":   "healthy",
+        "uptime":   stats.UptimeSecs,
+        "hostname": stats.Hostname,
+        "cpu_usage": func() float64 {
+            if len(stats.CPUInfo) > 0 {
+                return stats.CPUInfo[0].Usage
+            }
+            return 0
+        }(),
+        "memory_percent": stats.MemoryInfo.UsedPercent,
+        "goroutines":     stats.RuntimeStats.NumGoroutine,
+    }
+    
+    return e.JSON(200, health)
+}
+```
+
+### Metrics Dashboard
+
+```go
+func metricsHandler(e *core.RequestEvent) error {
+    ctx, cancel := context.WithTimeout(e.Request.Context(), 5*time.Second)
+    defer cancel()
+    
+    stats, err := monitoring.CollectSystemStats(ctx, serverStartTime)
+    if err != nil {
+        return e.JSON(500, map[string]string{
+            "error": err.Error(),
+        })
+    }
+    
+    // Format for dashboard
+    dashboard := map[string]interface{}{
+        "system": map[string]interface{}{
+            "hostname":       stats.Hostname,
+            "platform":       stats.Platform,
+            "os":             stats.OS,
+            "kernel_version": stats.KernelVersion,
+            "uptime_hours":   stats.UptimeSecs / 3600,
+        },
+        "cpu": map[string]interface{}{
+            "model":       stats.CPUInfo[0].ModelName,
+            "cores":       stats.CPUInfo[0].Cores,
+            "frequency":   stats.CPUInfo[0].Frequency,
+            "usage":       stats.CPUInfo[0].Usage,
+            "temperature": stats.CPUInfo[0].Temperature,
+        },
+        "memory": map[string]interface{}{
+            "total_gb":     float64(stats.MemoryInfo.Total) / 1e9,
+            "used_gb":      float64(stats.MemoryInfo.Used) / 1e9,
+            "free_gb":      float64(stats.MemoryInfo.Free) / 1e9,
+            "used_percent": stats.MemoryInfo.UsedPercent,
+        },
+        "disk": map[string]interface{}{
+            "total_gb": float64(stats.DiskTotal) / 1e9,
+            "used_gb":  float64(stats.DiskUsed) / 1e9,
+            "free_gb":  float64(stats.DiskFree) / 1e9,
+        },
+        "network": map[string]interface{}{
+            "interfaces":      stats.NetworkInterfaces,
+            "connections":     stats.NetworkConnections,
+            "total_sent_mb":   float64(stats.NetworkBytesSent) / 1e6,
+            "total_recv_mb":   float64(stats.NetworkBytesRecv) / 1e6,
+        },
+        "runtime": map[string]interface{}{
+            "go_version":     stats.RuntimeStats.GoVersion,
+            "goroutines":     stats.RuntimeStats.NumGoroutine,
+            "heap_alloc_mb":  float64(stats.RuntimeStats.MemStats.HeapAlloc) / 1e6,
+            "gc_runs":        stats.RuntimeStats.MemStats.NumGC,
+        },
+    }
+    
+    return e.JSON(200, dashboard)
+}
+```
+
+### Alerting System
+
+```go
+func monitorSystemHealth(ctx context.Context) {
+    ticker := time.NewTicker(1 * time.Minute)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            stats, err := monitoring.CollectSystemStats(ctx, serverStartTime)
+            if err != nil {
+                log.Printf("Failed to collect metrics: %v", err)
+                continue
+            }
+            
+            // Check CPU
+            if len(stats.CPUInfo) > 0 && stats.CPUInfo[0].Usage > 80 {
+                sendAlert("High CPU usage: %.1f%%", stats.CPUInfo[0].Usage)
+            }
+            
+            // Check memory
+            if stats.MemoryInfo.UsedPercent > 90 {
+                sendAlert("High memory usage: %.1f%%", stats.MemoryInfo.UsedPercent)
+            }
+            
+            // Check disk
+            diskUsedPercent := float64(stats.DiskUsed) / float64(stats.DiskTotal) * 100
+            if diskUsedPercent > 85 {
+                sendAlert("High disk usage: %.1f%%", diskUsedPercent)
+            }
+            
+            // Check goroutines
+            if stats.RuntimeStats.NumGoroutine > 10000 {
+                sendAlert("High goroutine count: %d", stats.RuntimeStats.NumGoroutine)
+            }
+        }
+    }
+}
+```
+
+## Caching
+
+```go
+const StatsRefreshInterval = 2 * time.Second
+
+var collector = &statsCollector{
+    lastCollected: time.Time{},
+    cachedStats:   nil,
+}
+```
+
+**Behavior:**
+- Stats are cached for 2 seconds
+- Thread-safe with RWMutex
+- Double-check locking pattern for efficiency
+
+**Location:** `core/monitoring/stats.go:14`
+
+## Error Handling
+
+`CollectSystemStats` returns a multi-error if individual collectors fail:
+
+```go
+err = errors.Join(multiError...)
+```
+
+This allows partial results even if some metrics are unavailable (e.g., temperature on systems without sensors).
+
+## Best Practices
+
+1. **Use Contexts**: Always pass contexts for timeout control
+2. **Cache Results**: Don't collect metrics on every request - use the built-in cache or add your own
+3. **Handle Partial Failures**: Some metrics may be unavailable on certain systems
+4. **Monitor Goroutines**: High goroutine counts indicate leaks
+5. **Set Thresholds**: Define reasonable alert thresholds for your workload
+6. **Format Units**: Convert bytes to GB/MB for human readability
+7. **Trend Analysis**: Track metrics over time, not just current values
+
+## Related
+
+- [Monitoring Dashboard](/features/dashboard) - Viewing metrics in the UI
+- [Health Endpoints](/features/dashboard) - Server health checks
+- [Performance Guide](/features/monitoring) - Optimizing application performance

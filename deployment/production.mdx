@@ -1,0 +1,292 @@
+---
+title: 'Production Deployment'
+description: 'Deploy pb-ext to production with optimized builds and automated deployment'
+---
+
+## Production Build
+
+Create an optimized production build using the `pb-cli` toolchain:
+
+```bash
+pb-cli --production
+```
+
+This command:
+- Builds and optimizes frontend assets
+- Generates OpenAPI specifications
+- Compiles the server binary with optimization flags (`-ldflags="-s -w"`)
+- Creates a deployment-ready package in the `dist/` directory
+
+### Custom Output Directory
+
+Specify a custom output directory:
+
+```bash
+pb-cli --production --dist release
+```
+
+## Automated Deployment with pb-deployer
+
+**pb-deployer** provides automated VPS deployment with zero-downtime updates, security hardening, and automated backup management.
+
+### Installation
+
+```bash
+git clone https://github.com/magooney-loon/pb-deployer.git
+cd pb-deployer
+
+# Install dependencies
+go mod tidy
+
+# Run deployment wizard
+go run cmd/scripts/main.go --install
+```
+
+### Features
+
+<CardGroup cols={2}>
+  <Card title="Server Provisioning" icon="server">
+    Automated server setup with best practices
+  </Card>
+  <Card title="Security Hardening" icon="shield">
+    SSL/TLS, firewall configuration, and security updates
+  </Card>
+  <Card title="Zero-Downtime" icon="clock">
+    Rolling updates with health checks
+  </Card>
+  <Card title="Auto-Rollback" icon="rotate-left">
+    Automatic rollback on deployment failure
+  </Card>
+  <Card title="Systemd Integration" icon="gear">
+    Service management and auto-restart
+  </Card>
+  <Card title="Backup Management" icon="database">
+    Automated backups of data and configurations
+  </Card>
+</CardGroup>
+
+<Info>
+  **pb-deployer** handles the entire deployment lifecycle, from initial server setup to ongoing updates and maintenance.
+</Info>
+
+## Manual VPS Deployment
+
+For manual deployments, follow these steps:
+
+<Steps>
+  <Step title="Build for production">
+    Create the production build:
+    ```bash
+    pb-cli --production
+    ```
+  </Step>
+
+  <Step title="Upload to server">
+    Transfer the `dist/` directory to your VPS:
+    ```bash
+    scp -r dist/ user@your-server.com:/opt/pb-ext/
+    ```
+  </Step>
+
+  <Step title="Configure systemd service">
+    Create a systemd service file at `/etc/systemd/system/pb-ext.service`:
+    ```ini
+    [Unit]
+    Description=pb-ext Server
+    After=network.target
+
+    [Service]
+    Type=simple
+    User=www-data
+    WorkingDirectory=/opt/pb-ext
+    ExecStart=/opt/pb-ext/pb-ext serve
+    Restart=always
+    RestartSec=5
+    StandardOutput=journal
+    StandardError=journal
+
+    # Environment variables
+    Environment="PB_DATA_DIR=/var/lib/pb-ext/data"
+
+    [Install]
+    WantedBy=multi-user.target
+    ```
+  </Step>
+
+  <Step title="Enable and start service">
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable pb-ext
+    sudo systemctl start pb-ext
+    ```
+  </Step>
+</Steps>
+
+## Binary Optimization
+
+The production build uses Go linker flags to reduce binary size:
+
+```bash
+go build -ldflags="-s -w" -o dist/pb-ext ./cmd/server
+```
+
+<ParamField path="-s" type="flag">
+  Strip symbol table and debug information
+</ParamField>
+
+<ParamField path="-w" type="flag">
+  Strip DWARF debugging information
+</ParamField>
+
+These flags typically reduce binary size by 20-30% without affecting runtime performance.
+
+## SSL/TLS Configuration
+
+### Reverse Proxy with Nginx
+
+Recommended approach for production:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name your-domain.com;
+
+    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+### Let's Encrypt
+
+Obtain free SSL certificates:
+
+```bash
+sudo apt-get install certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.com
+```
+
+## Zero-Downtime Updates
+
+For manual zero-downtime deployments:
+
+<Steps>
+  <Step title="Upload new binary">
+    ```bash
+    scp dist/pb-ext user@server:/opt/pb-ext/pb-ext.new
+    ```
+  </Step>
+
+  <Step title="Backup current binary">
+    ```bash
+    ssh user@server "mv /opt/pb-ext/pb-ext /opt/pb-ext/pb-ext.backup"
+    ```
+  </Step>
+
+  <Step title="Replace binary">
+    ```bash
+    ssh user@server "mv /opt/pb-ext/pb-ext.new /opt/pb-ext/pb-ext"
+    ```
+  </Step>
+
+  <Step title="Reload service">
+    ```bash
+    ssh user@server "sudo systemctl reload-or-restart pb-ext"
+    ```
+  </Step>
+
+  <Step title="Verify deployment">
+    Check health endpoint:
+    ```bash
+    curl https://your-domain.com/_/_
+    ```
+  </Step>
+</Steps>
+
+## Backup Strategies
+
+### Database Backups
+
+PocketBase uses SQLite, making backups straightforward:
+
+```bash
+# Backup script
+#!/bin/bash
+DATE=$(date +%Y%m%d_%H%M%S)
+cp /var/lib/pb-ext/data/data.db /backups/data_${DATE}.db
+
+# Keep only last 30 days
+find /backups -name "data_*.db" -mtime +30 -delete
+```
+
+Schedule with cron:
+```bash
+0 2 * * * /opt/pb-ext/backup.sh
+```
+
+### Automated Backups with pb-deployer
+
+<Info>
+  **pb-deployer** includes built-in backup management with configurable retention policies and automated restoration.
+</Info>
+
+## Health Checks
+
+Monitor your deployment:
+
+```bash
+# Check service status
+sudo systemctl status pb-ext
+
+# View logs
+sudo journalctl -u pb-ext -f
+
+# Health endpoint
+curl http://localhost:8090/_/_
+```
+
+## Production Checklist
+
+<AccordionGroup>
+  <Accordion title="Before Deployment">
+    - [ ] Run `pb-cli --production` successfully
+    - [ ] Test OpenAPI specs with `--validate-specs-dir`
+    - [ ] Review and test frontend build
+    - [ ] Verify environment variables are configured
+    - [ ] Backup current production database
+  </Accordion>
+
+  <Accordion title="Security">
+    - [ ] SSL/TLS certificates configured
+    - [ ] Firewall rules in place
+    - [ ] Service runs as non-root user
+    - [ ] Database file permissions restricted (0600)
+    - [ ] Admin panel behind authentication
+  </Accordion>
+
+  <Accordion title="Monitoring">
+    - [ ] Systemd service enabled and running
+    - [ ] Log rotation configured
+    - [ ] Backup script scheduled
+    - [ ] Health check endpoint accessible
+    - [ ] Alerts configured for service failures
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Frontend Configuration" icon="browser" href="/deployment/frontend">
+    Configure SvelteKit and static file serving
+  </Card>
+  <Card title="Environment Setup" icon="gear" href="/deployment/environment">
+    Configure ports, data directories, and environment variables
+  </Card>
+</CardGroup>

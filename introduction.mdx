@@ -1,0 +1,276 @@
+---
+title: Introduction
+description: Learn about pb-ext, a production-ready Go framework that enhances PocketBase with monitoring, logging, API docs, and analytics
+---
+
+## What is pb-ext?
+
+pb-ext is a Go library that wraps [PocketBase](https://pocketbase.io) with production-ready features designed to help you build, monitor, and scale backend applications faster. It provides everything you need to take a PocketBase application from development to production.
+
+<Note>
+pb-ext is a **wrapper**, not a fork. You get all the power of PocketBase plus production features like monitoring, structured logging, auto-generated API documentation, and visitor analytics.
+</Note>
+
+## Why pb-ext?
+
+PocketBase is excellent for building backends quickly, but production deployments often need additional features:
+
+- **Observability**: How do you monitor your API in production?
+- **Documentation**: How do developers discover and test your endpoints?
+- **Background Jobs**: How do you schedule maintenance tasks and track their execution?
+- **Analytics**: How do you understand user behavior without compromising privacy?
+
+pb-ext solves these problems by extending PocketBase with a carefully integrated suite of production tools.
+
+## Core Features
+
+<CardGroup cols={2}>
+  <Card title="Auto-Generated API Docs" icon="book">
+    OpenAPI/Swagger documentation generated automatically from your Go source code using AST parsing. No manual annotations required.
+  </Card>
+  
+  <Card title="System Monitoring" icon="chart-line">
+    Real-time metrics for CPU, memory, disk, network, and runtime statistics accessible via a built-in dashboard.
+  </Card>
+  
+  <Card title="Cron Job Tracking" icon="clock">
+    Schedule background tasks with automatic execution logging, progress tracking, and statistics collection.
+  </Card>
+  
+  <Card title="Structured Logging" icon="list">
+    Production-grade logging with trace IDs, error tracking, and request correlation for debugging.
+  </Card>
+  
+  <Card title="Visitor Analytics" icon="users">
+    GDPR-compliant visitor tracking with device, browser, and UTM parameter capture. No personal data stored.
+  </Card>
+  
+  <Card title="PocketBase Integration" icon="database">
+    Full access to PocketBase's auth system, collections API, and admin panel with seamless integration.
+  </Card>
+</CardGroup>
+
+## Architecture Overview
+
+pb-ext follows a layered architecture that builds on top of PocketBase:
+
+```
+┌─────────────────────────────────────────┐
+│         Your Application                │
+│  (cmd/server/main.go, routes, jobs)    │
+├─────────────────────────────────────────┤
+│            pb-ext Core                  │
+│  ┌─────────────────────────────────┐   │
+│  │ API Docs (AST-based OpenAPI)    │   │
+│  │ Job Manager (Cron + Logging)    │   │
+│  │ Analytics (GDPR-compliant)      │   │
+│  │ Monitoring (System Metrics)     │   │
+│  │ Structured Logging              │   │
+│  └─────────────────────────────────┘   │
+├─────────────────────────────────────────┤
+│          PocketBase                     │
+│  (Database, Auth, Collections, Admin)  │
+└─────────────────────────────────────────┘
+```
+
+### Key Components
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| **Server** | `core/server/` | Core server wrapper with lifecycle management |
+| **API Docs** | `core/server/api/` | OpenAPI spec generation via Go AST parsing |
+| **Jobs** | `core/jobs/` | Cron job scheduling, execution logging, and management API |
+| **Analytics** | `core/analytics/` | Visitor tracking, buffering, and aggregation |
+| **Monitoring** | `core/monitoring/` | System metrics collection (CPU, memory, disk, network) |
+| **Logging** | `core/logging/` | Structured logging with trace IDs and error handling |
+
+## pb-ext vs Vanilla PocketBase
+
+<AccordionGroup>
+  <Accordion title="API Documentation">
+    **PocketBase**: No built-in API documentation. You need to manually document your custom endpoints.
+    
+    **pb-ext**: Automatic OpenAPI/Swagger UI generation from your Go source code. Supports versioning, authentication detection, and parameter inference.
+  </Accordion>
+
+  <Accordion title="Background Jobs">
+    **PocketBase**: No built-in cron job system. You implement your own scheduling.
+    
+    **pb-ext**: Full cron job system with execution logging, manual triggering, progress tracking, and a management dashboard.
+  </Accordion>
+
+  <Accordion title="Monitoring">
+    **PocketBase**: Basic server logs. No metrics dashboard.
+    
+    **pb-ext**: Real-time system metrics dashboard at `/_/_` showing CPU, memory, disk, network, request statistics, and error rates.
+  </Accordion>
+
+  <Accordion title="Analytics">
+    **PocketBase**: No visitor analytics. You integrate third-party tools.
+    
+    **pb-ext**: Built-in GDPR-compliant analytics tracking page views, devices, browsers, and UTM parameters without storing personal data.
+  </Accordion>
+
+  <Accordion title="Logging">
+    **PocketBase**: Basic stdout logging.
+    
+    **pb-ext**: Structured logging with trace IDs, request correlation, error tracking, and integration with the job execution system.
+  </Accordion>
+
+  <Accordion title="Production Deployment">
+    **PocketBase**: Manual deployment, server setup, and management.
+    
+    **pb-ext**: Integrated `pb-cli` build toolchain with frontend building, OpenAPI spec generation, and optional automated deployment via `pb-deployer`.
+  </Accordion>
+</AccordionGroup>
+
+## How It Works
+
+pb-ext uses the **functional options pattern** to initialize a PocketBase server with enhanced capabilities:
+
+```go
+package main
+
+import (
+    app "github.com/magooney-loon/pb-ext/core"
+    "github.com/pocketbase/pocketbase/core"
+)
+
+func main() {
+    // Create server with options
+    srv := app.New(app.InDeveloperMode())
+    
+    // Setup logging
+    app.SetupLogging(srv)
+    
+    // Register your routes, collections, jobs
+    registerRoutes(srv.App())
+    registerCollections(srv.App())
+    registerJobs(srv.App())
+    
+    // Setup error recovery
+    srv.App().OnServe().BindFunc(func(e *core.ServeEvent) error {
+        app.SetupRecovery(srv.App(), e)
+        return e.Next()
+    })
+    
+    // Start the server
+    if err := srv.Start(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+### Server Lifecycle
+
+1. **Bootstrap Phase** (`OnBootstrap`)
+   - Initialize job management system
+   - Register internal system jobs (log cleanup, analytics cleanup)
+   - Create reserved collections (`_analytics`, `_analytics_sessions`, `_job_logs`)
+
+2. **Serve Phase** (`OnServe`)
+   - Register health dashboard route at `/_/_`
+   - Initialize analytics tracking middleware
+   - Register job management API routes
+   - Setup static file serving from `pb_public/`
+
+3. **User Hooks** (Your code)
+   - Register custom routes via API version manager
+   - Define collections and their schemas
+   - Schedule custom cron jobs
+
+## Access Points
+
+Once your server is running, pb-ext provides several access points:
+
+| URL | Purpose | Auth Required |
+|-----|---------|---------------|
+| `http://127.0.0.1:8090/_` | PocketBase admin panel | Yes (superuser) |
+| `http://127.0.0.1:8090/_/_` | pb-ext health dashboard | Yes (superuser) |
+| `http://127.0.0.1:8090/api/docs/versions` | List available API versions | No |
+| `http://127.0.0.1:8090/api/docs/v1/swagger` | Swagger UI for API v1 | Configurable |
+| `http://127.0.0.1:8090/api/docs/debug/ast` | AST parsing debug info | Yes (superuser) |
+| `http://127.0.0.1:8090/api/cron/jobs` | List cron jobs | Yes (superuser) |
+
+<Warning>
+All reserved routes starting with `/_/_` and `/api/docs/*`, `/api/cron/*` are protected. Do not register custom routes at these paths.
+</Warning>
+
+## Reserved Collections
+
+pb-ext automatically creates and manages these PocketBase collections:
+
+| Collection | Purpose | Retention |
+|------------|---------|-----------|
+| `_analytics` | Daily aggregated page view counters | 90 days |
+| `_analytics_sessions` | Ring buffer of 50 most recent visits | Latest 50 |
+| `_job_logs` | Cron job execution logs | 72 hours |
+
+<Note>
+These collections are **system collections** (hidden from the PocketBase admin UI). They store no personal identifiable information (PII) and are GDPR-compliant by design.
+</Note>
+
+## Development vs Production
+
+pb-ext supports two modes of operation:
+
+### Development Mode
+
+```go
+srv := app.New(app.InDeveloperMode())
+```
+
+- OpenAPI specs generated at runtime via AST parsing
+- No disk files needed for API documentation
+- Hot reload friendly
+- Debug endpoints enabled at `/api/docs/debug/ast`
+
+### Production Mode
+
+```bash
+pb-cli --production
+```
+
+- OpenAPI specs pre-generated at build time
+- Specs read from `dist/specs/` directory
+- Optimized binary with `-ldflags="-s -w"`
+- Frontend assets bundled in `pb_public/`
+
+## Build Toolchain
+
+pb-ext includes **pb-cli**, a build toolchain that automates:
+
+- Frontend building (npm install + build)
+- OpenAPI spec generation
+- Asset copying to `pb_public/`
+- Production binary compilation
+- Development server launching
+
+```bash
+pb-cli                  # Build frontend + start dev server
+pb-cli --run-only       # Skip frontend build, start server only
+pb-cli --build-only     # Build frontend to pb_public/, no server
+pb-cli --production     # Full production build to dist/
+```
+
+See the [Installation guide](/installation) for setup details.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart Guide" icon="rocket" href="/quickstart">
+    Get pb-ext running in 5 minutes with a step-by-step tutorial
+  </Card>
+  
+  <Card title="Installation" icon="download" href="/installation">
+    Detailed installation instructions and system requirements
+  </Card>
+  
+  <Card title="API Documentation" icon="code" href="/api/overview">
+    Learn how to use the auto-generated OpenAPI system
+  </Card>
+  
+  <Card title="Cron Jobs" icon="clock" href="/features/cron-jobs">
+    Schedule and monitor background tasks
+  </Card>
+</CardGroup>

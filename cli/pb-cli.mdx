@@ -1,0 +1,243 @@
+---
+title: pb-cli
+description: Build toolchain for automating pb-ext development, testing, and production deployments
+icon: terminal
+---
+
+## Overview
+
+**pb-cli** is the official build toolchain for pb-ext projects. It automates frontend builds, OpenAPI spec generation, server compilation, testing, and production deployments through a unified CLI interface.
+
+<Info>
+  pb-cli handles the full development lifecycle from dependency installation to production-ready binaries.
+</Info>
+
+## Why pb-cli?
+
+Manually coordinating frontend builds, Go compilation, OpenAPI spec generation, and test execution is error-prone and time-consuming. pb-cli provides:
+
+- **Unified workflow**: Single command for build + serve
+- **Smart detection**: Auto-detects frontend type (npm, static, or none)
+- **OpenAPI automation**: Generates and validates specs for production
+- **Production optimization**: Stripped binaries with `-ldflags="-s -w"`
+- **Test automation**: Full coverage reports with multiple formats
+- **CI/CD ready**: Designed for automation pipelines
+
+## Installation
+
+### Global Installation (Recommended)
+
+Install pb-cli as a global binary available anywhere on your system:
+
+```bash
+go install github.com/magooney-loon/pb-ext/cmd/pb-cli@latest
+```
+
+Verify installation:
+
+```bash
+pb-cli --help
+```
+
+<Warning>
+  Ensure `$GOPATH/bin` or `$HOME/go/bin` is in your `PATH`:
+  
+  ```bash
+  export PATH=$PATH:$(go env GOPATH)/bin
+  ```
+</Warning>
+
+### Local Execution
+
+Run directly from the pb-ext repository without installing:
+
+```bash
+go run cmd/pb-cli/main.go [command]
+```
+
+### Programmatic Usage
+
+Import as a package in your Go applications:
+
+```go
+import "github.com/magooney-loon/pb-ext/pkg/scripts"
+
+func main() {
+    scripts.RunCLI()
+}
+```
+
+## Quick Start
+
+### Development Mode
+
+Build frontend and start development server:
+
+```bash
+pb-cli
+```
+
+This runs:
+1. System validation (checks Go/Node/npm)
+2. Frontend build (`npm run build`)
+3. Assets deployment (copy to `pb_public/`)
+4. Server startup (`go run ./cmd/server --dev serve`)
+
+### Install Dependencies
+
+Install all project dependencies (Go modules + npm packages):
+
+```bash
+pb-cli --install
+```
+
+### Build Assets Only
+
+Compile frontend and generate OpenAPI specs without starting the server:
+
+```bash
+pb-cli --build-only
+```
+
+### Start Server Only
+
+Skip frontend build and start the development server immediately:
+
+```bash
+pb-cli --run-only
+```
+
+### Production Build
+
+Create optimized production binary and assets:
+
+```bash
+pb-cli --production
+```
+
+Output directory: `dist/` (customizable with `--dist`)
+
+### Run Tests
+
+Execute test suite with coverage reports:
+
+```bash
+pb-cli --test-only
+```
+
+## System Requirements
+
+<CardGroup cols={3}>
+  <Card title="Go" icon="golang">
+    Version 1.19 or higher
+  </Card>
+  <Card title="Node.js" icon="node-js">
+    Version 16 or higher
+  </Card>
+  <Card title="npm" icon="npm">
+    Version 8 or higher
+  </Card>
+</CardGroup>
+
+pb-cli automatically validates system requirements before executing operations.
+
+## Command Reference
+
+For detailed command documentation, see:
+
+<Card title="Commands" icon="list" href="/cli/commands">
+  Complete command reference with examples and use cases
+</Card>
+
+<Card title="Build Pipeline" icon="pipe" href="/cli/build-pipeline">
+  Deep dive into the build orchestration process
+</Card>
+
+## Key Features
+
+### Smart Frontend Detection
+
+pb-cli automatically detects your frontend type:
+
+- **npm-based**: Runs `npm install` and `npm run build`, copies output to `pb_public/`
+- **Static files**: Directly copies files to `pb_public/`
+- **No frontend**: Skips frontend build steps
+
+### OpenAPI Spec Generation
+
+For production builds, pb-cli:
+
+1. Runs `go run ./cmd/server --generate-specs-dir ./core/server/api/specs`
+2. Validates generated specs with `--validate-specs-dir`
+3. Copies specs to `dist/specs/` for disk-based loading
+
+<Info>
+  In development mode, specs are generated at runtime via AST parsing—no disk files needed.
+</Info>
+
+### Test Automation
+
+When running tests (`--test-only` or during production builds):
+
+- Auto-discovers test packages by walking the project directory
+- Runs tests with structured output
+- Generates multiple report formats:
+  - `test-summary.txt` - Human-readable summary
+  - `test-report.json` - Machine-readable JSON
+  - `coverage.html` - Interactive HTML coverage report
+  - `coverage-summary.txt` - Function-level coverage breakdown
+
+### Production Optimization
+
+Production builds (`--production`) create optimized binaries:
+
+```bash
+go build -ldflags="-s -w" -o dist/pb-cli ./cmd/server
+```
+
+Flags:
+- `-s`: Strip symbol table
+- `-w`: Strip DWARF debugging info
+
+Result: Significantly smaller binary size
+
+## Output Directories
+
+### Development Mode
+
+```
+project/
+├── pb_public/          # Frontend assets (served by PocketBase)
+├── pb_data/            # PocketBase database (created on first run)
+└── core/server/api/specs/  # OpenAPI specs (runtime generation)
+```
+
+### Production Mode
+
+```
+dist/
+├── pb-cli              # Optimized server binary
+├── pb_public/          # Frontend assets
+├── specs/              # Pre-generated OpenAPI specs
+├── test-reports/       # Test coverage and results
+├── package-metadata.json
+├── build-info.txt
+└── pb-ext-production.tar.gz  # Complete archive
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Command Reference" icon="terminal" href="/cli/commands">
+    Explore all available commands and flags
+  </Card>
+  <Card title="Build Pipeline" icon="pipe" href="/cli/build-pipeline">
+    Understand the build orchestration internals
+  </Card>
+  <Card title="Quick Start Guide" icon="rocket" href="/quickstart">
+    Get started with pb-ext development
+  </Card>
+  <Card title="Deployment" icon="server" href="/deployment/production">
+    Deploy your production build
+  </Card>
+</CardGroup>

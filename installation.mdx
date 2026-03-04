@@ -1,0 +1,616 @@
+---
+title: Installation
+description: Detailed installation guide for pb-ext with system requirements, multiple installation methods, and troubleshooting
+---
+
+This guide covers everything you need to install and configure pb-ext for development and production use.
+
+## System Requirements
+
+### Minimum Requirements
+
+| Component | Version | Notes |
+|-----------|---------|-------|
+| **Go** | 1.25.7 or higher | Required for building and running pb-ext |
+| **Operating System** | Linux, macOS, Windows | Cross-platform support |
+| **RAM** | 512 MB minimum | 1 GB+ recommended for production |
+| **Disk Space** | 100 MB | For binaries, database, and dependencies |
+
+<Warning>
+pb-ext requires **Go 1.25.7** or higher. Earlier versions are not supported due to module dependencies.
+</Warning>
+
+### Optional Dependencies
+
+| Tool | Purpose | Installation |
+|------|---------|--------------|
+| **Node.js** | Frontend building with pb-cli | [nodejs.org](https://nodejs.org) |
+| **Git** | Version control and examples | [git-scm.com](https://git-scm.com) |
+| **curl** | Testing API endpoints | Usually pre-installed |
+
+## Installation Methods
+
+<Tabs>
+  <Tab title="Quick Start (Recommended)">
+    ### Quick Start Installation
+    
+    The fastest way to get started with pb-ext:
+    
+    <Steps>
+      <Step title="Install Go">
+        Download and install Go from [golang.org/dl](https://go.dev/dl/)
+        
+        Verify installation:
+        ```bash
+        go version
+        # Expected: go version go1.25.7 or higher
+        ```
+      </Step>
+      
+      <Step title="Create Project">
+        ```bash
+        mkdir my-pb-project
+        cd my-pb-project
+        go mod init my-pb-project
+        ```
+      </Step>
+      
+      <Step title="Install pb-ext">
+        Add pb-ext as a dependency:
+        ```bash
+        go get github.com/magooney-loon/pb-ext/core
+        go mod tidy
+        ```
+      </Step>
+      
+      <Step title="Install pb-cli Toolchain">
+        ```bash
+        go install github.com/magooney-loon/pb-ext/cmd/pb-cli@latest
+        ```
+        
+        Verify installation:
+        ```bash
+        pb-cli --help
+        ```
+      </Step>
+      
+      <Step title="Create Application">
+        Create `cmd/server/main.go`:
+        
+        ```go
+        package main
+        
+        import (
+            "log"
+            app "github.com/magooney-loon/pb-ext/core"
+            "github.com/pocketbase/pocketbase/core"
+        )
+        
+        func main() {
+            srv := app.New(app.InDeveloperMode())
+            app.SetupLogging(srv)
+            
+            srv.App().OnServe().BindFunc(func(e *core.ServeEvent) error {
+                app.SetupRecovery(srv.App(), e)
+                return e.Next()
+            })
+            
+            if err := srv.Start(); err != nil {
+                log.Fatal(err)
+            }
+        }
+        ```
+      </Step>
+      
+      <Step title="Run Application">
+        ```bash
+        pb-cli --run-only
+        ```
+        
+        Open [http://127.0.0.1:8090/_](http://127.0.0.1:8090/_) to access the admin panel.
+      </Step>
+    </Steps>
+  </Tab>
+  
+  <Tab title="From Examples">
+    ### Using Example Project
+    
+    Clone the pb-ext repository to get a complete working example:
+    
+    <Steps>
+      <Step title="Clone Repository">
+        ```bash
+        git clone https://github.com/magooney-loon/pb-ext.git
+        cd pb-ext
+        ```
+      </Step>
+      
+      <Step title="Install Dependencies">
+        ```bash
+        go mod tidy
+        go install github.com/magooney-loon/pb-ext/cmd/pb-cli@latest
+        ```
+      </Step>
+      
+      <Step title="Run Example Server">
+        ```bash
+        pb-cli --run-only
+        ```
+      </Step>
+      
+      <Step title="Explore Examples">
+        The `cmd/server/` directory contains complete examples:
+        - `main.go` - Server initialization with flags
+        - `routes.go` - API versioning and handlers
+        - `collections.go` - Database schema definitions
+        - `jobs.go` - Cron job examples
+        - `handlers.go` - Request handlers with OpenAPI annotations
+      </Step>
+    </Steps>
+    
+    <Note>
+    This method is ideal for learning pb-ext features through working code examples.
+    </Note>
+  </Tab>
+  
+  <Tab title="Docker">
+    ### Docker Installation
+    
+    Run pb-ext in a containerized environment:
+    
+    <Steps>
+      <Step title="Create Dockerfile">
+        ```dockerfile Dockerfile
+        FROM golang:1.25.7-alpine AS builder
+        
+        WORKDIR /app
+        
+        # Install dependencies
+        RUN apk add --no-cache git
+        
+        # Copy go mod files
+        COPY go.mod go.sum ./
+        RUN go mod download
+        
+        # Copy source code
+        COPY . .
+        
+        # Build application
+        RUN go build -ldflags="-s -w" -o server cmd/server/main.go
+        
+        # Runtime image
+        FROM alpine:latest
+        
+        WORKDIR /app
+        
+        # Copy binary and static files
+        COPY --from=builder /app/server .
+        COPY --from=builder /app/pb_public ./pb_public
+        
+        EXPOSE 8090
+        
+        CMD ["./server", "serve", "--http=0.0.0.0:8090"]
+        ```
+      </Step>
+      
+      <Step title="Build Image">
+        ```bash
+        docker build -t my-pb-app .
+        ```
+      </Step>
+      
+      <Step title="Run Container">
+        ```bash
+        docker run -p 8090:8090 \
+          -v $(pwd)/pb_data:/app/pb_data \
+          my-pb-app
+        ```
+      </Step>
+    </Steps>
+    
+    <Note>
+    The volume mount (`-v`) persists your database across container restarts.
+    </Note>
+  </Tab>
+  
+  <Tab title="Manual Build">
+    ### Manual Build from Source
+    
+    Build pb-ext without using pb-cli:
+    
+    <Steps>
+      <Step title="Clone and Setup">
+        ```bash
+        git clone https://github.com/magooney-loon/pb-ext.git
+        cd pb-ext
+        go mod download
+        ```
+      </Step>
+      
+      <Step title="Build Binary">
+        ```bash
+        go build -o pb-server cmd/server/main.go
+        ```
+        
+        For production with optimizations:
+        ```bash
+        go build -ldflags="-s -w" -o pb-server cmd/server/main.go
+        ```
+      </Step>
+      
+      <Step title="Run Server">
+        ```bash
+        ./pb-server serve
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Verifying Installation
+
+After installation, verify everything works correctly:
+
+<Steps>
+  <Step title="Check Go Version">
+    ```bash
+    go version
+    ```
+    
+    Should output `go version go1.25.7` or higher.
+  </Step>
+  
+  <Step title="Check pb-cli">
+    ```bash
+    pb-cli --help
+    ```
+    
+    Should display the pb-cli usage information.
+  </Step>
+  
+  <Step title="Run Test Server">
+    Create a minimal test:
+    
+    ```bash
+    mkdir test-pb
+    cd test-pb
+    go mod init test-pb
+    go get github.com/magooney-loon/pb-ext/core
+    ```
+    
+    Create `main.go`:
+    ```go
+    package main
+    import (
+        "log"
+        app "github.com/magooney-loon/pb-ext/core"
+    )
+    func main() {
+        srv := app.New(app.InDeveloperMode())
+        app.SetupLogging(srv)
+        if err := srv.Start(); err != nil {
+            log.Fatal(err)
+        }
+    }
+    ```
+    
+    Run it:
+    ```bash
+    go run main.go serve
+    ```
+  </Step>
+  
+  <Step title="Access Admin Panel">
+    Open [http://127.0.0.1:8090/_](http://127.0.0.1:8090/_) in your browser.
+    
+    You should see the PocketBase admin setup page.
+  </Step>
+  
+  <Step title="Access Dashboard">
+    After creating an admin account, visit [http://127.0.0.1:8090/_/_](http://127.0.0.1:8090/_/_).
+    
+    You should see the pb-ext health dashboard with system metrics.
+  </Step>
+</Steps>
+
+## Configuration
+
+### Environment Variables
+
+pb-ext respects standard PocketBase environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PB_DATA_DIR` | `./pb_data` | Database and storage directory |
+| `PB_ENCRYPTION_KEY` | Generated | Database encryption key |
+| `PB_LOG_LEVEL` | `info` | Logging level (debug, info, warn, error) |
+
+Set environment variables before starting:
+
+```bash
+export PB_DATA_DIR=/var/lib/pb-data
+export PB_LOG_LEVEL=debug
+pb-cli --run-only
+```
+
+### Configuration Options
+
+Configure pb-ext via functional options in your `main.go`:
+
+```go
+import (
+    app "github.com/magooney-loon/pb-ext/core"
+    "github.com/pocketbase/pocketbase"
+)
+
+func main() {
+    // Option 1: Custom PocketBase config
+    srv := app.New(
+        app.WithConfig(&pocketbase.Config{
+            DefaultDev:     true,
+            DefaultDataDir: "./custom_pb_data",
+        }),
+    )
+    
+    // Option 2: Existing PocketBase instance
+    pb := pocketbase.New()
+    srv := app.New(app.WithPocketbase(pb))
+    
+    // Option 3: Developer mode toggle
+    srv := app.New(app.InDeveloperMode())
+    
+    // Start server
+    app.SetupLogging(srv)
+    srv.Start()
+}
+```
+
+<Warning>
+`WithConfig` and `WithPocketbase` are mutually exclusive. Use one or the other, not both.
+</Warning>
+
+### Custom Port Configuration
+
+Change the default port (8090) programmatically:
+
+```go
+import "os"
+
+func main() {
+    // Set port before creating server
+    os.Args = []string{"app", "serve", "--http=127.0.0.1:9090"}
+    
+    srv := app.New(app.InDeveloperMode())
+    app.SetupLogging(srv)
+    srv.Start()
+}
+```
+
+Or via command line:
+
+```bash
+pb-cli --run-only -- serve --http=127.0.0.1:9090
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="pb-cli: command not found">
+    **Problem**: The `pb-cli` command is not found after installation.
+    
+    **Solution**: Ensure `$GOPATH/bin` is in your PATH:
+    
+    ```bash
+    # Check GOPATH
+    go env GOPATH
+    
+    # Add to PATH (Linux/macOS)
+    export PATH="$PATH:$(go env GOPATH)/bin"
+    
+    # Add to PATH (Windows PowerShell)
+    $env:Path += ";$(go env GOPATH)\bin"
+    ```
+    
+    Make it permanent by adding to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.):
+    ```bash
+    echo 'export PATH="$PATH:$(go env GOPATH)/bin"' >> ~/.bashrc
+    source ~/.bashrc
+    ```
+  </Accordion>
+  
+  <Accordion title="Go version too old">
+    **Problem**: Error messages about Go version requirements.
+    
+    **Solution**: Upgrade to Go 1.25.7 or higher:
+    
+    ```bash
+    # Download from golang.org/dl
+    # Or use version manager like gvm:
+    
+    # Install gvm
+    bash < <(curl -s -S -L https://raw.githubusercontent.com/moovweb/gvm/master/binscripts/gvm-installer)
+    
+    # Install Go 1.25.7
+    gvm install go1.25.7
+    gvm use go1.25.7 --default
+    ```
+  </Accordion>
+  
+  <Accordion title="Port already in use">
+    **Problem**: `bind: address already in use` error.
+    
+    **Solution**: Find and kill the process using port 8090:
+    
+    ```bash
+    # Find process
+    lsof -i :8090
+    # Or
+    netstat -tuln | grep 8090
+    
+    # Kill process
+    kill -9 <PID>
+    
+    # Or use a different port
+    pb-cli --run-only -- serve --http=127.0.0.1:9090
+    ```
+  </Accordion>
+  
+  <Accordion title="Module download failures">
+    **Problem**: `go mod tidy` fails to download dependencies.
+    
+    **Solution**: Check your Go module proxy settings:
+    
+    ```bash
+    # Use default proxy
+    go env -w GOPROXY=https://proxy.golang.org,direct
+    
+    # Or use mirror (China)
+    go env -w GOPROXY=https://goproxy.cn,direct
+    
+    # Retry
+    go clean -modcache
+    go mod tidy
+    ```
+  </Accordion>
+  
+  <Accordion title="Permission denied on Linux">
+    **Problem**: Cannot write to `pb_data` directory.
+    
+    **Solution**: Check directory permissions:
+    
+    ```bash
+    # Create directory with proper permissions
+    mkdir -p pb_data
+    chmod 755 pb_data
+    
+    # Or run with specific user
+    sudo chown -R $USER:$USER pb_data
+    ```
+  </Accordion>
+  
+  <Accordion title="Dashboard shows 401 Unauthorized">
+    **Problem**: Cannot access `/_/_` dashboard.
+    
+    **Solution**: The dashboard requires superuser authentication:
+    
+    1. First visit `/_/` to create an admin account
+    2. Log in to the admin panel
+    3. Then access `/_/_` - you should be automatically authenticated
+    
+    If issues persist, clear cookies and try again.
+  </Accordion>
+  
+  <Accordion title="OpenAPI docs not generating">
+    **Problem**: Swagger UI shows no endpoints.
+    
+    **Solution**: Ensure your route files have the `// API_SOURCE` directive:
+    
+    ```go
+    package main
+    
+    // API_SOURCE  ← This is required!
+    
+    import (
+        "github.com/magooney-loon/pb-ext/core/server/api"
+        "github.com/pocketbase/pocketbase/core"
+    )
+    
+    func registerRoutes(app core.App) {
+        // Your routes...
+    }
+    ```
+    
+    Check debug endpoint for AST parsing errors:
+    [http://127.0.0.1:8090/api/docs/debug/ast](http://127.0.0.1:8090/api/docs/debug/ast)
+  </Accordion>
+</AccordionGroup>
+
+## Platform-Specific Notes
+
+### Linux
+
+pb-ext works out of the box on most Linux distributions. For production deployments:
+
+```bash
+# Install as systemd service
+sudo nano /etc/systemd/system/pb-ext.service
+```
+
+```ini
+[Unit]
+Description=pb-ext Server
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/pb-ext
+ExecStart=/var/www/pb-ext/server serve
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable pb-ext
+sudo systemctl start pb-ext
+```
+
+### macOS
+
+On macOS, you may need to allow the binary through Gatekeeper:
+
+```bash
+# If you get "unidentified developer" warning
+xattr -d com.apple.quarantine ./pb-server
+
+# Or build from source instead
+go build -o pb-server cmd/server/main.go
+```
+
+### Windows
+
+On Windows, use PowerShell or CMD:
+
+```powershell
+# Install pb-cli
+go install github.com/magooney-loon/pb-ext/cmd/pb-cli@latest
+
+# Add to PATH permanently
+[Environment]::SetEnvironmentVariable("Path", $env:Path + ";$env:GOPATH\bin", "User")
+
+# Run server
+pb-cli --run-only
+```
+
+<Note>
+Windows Defender may flag the compiled binary. Add an exclusion for your project directory if needed.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart Guide" icon="rocket" href="/quickstart">
+    Follow the quickstart to build your first pb-ext application
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/core/configuration">
+    Learn about advanced server configuration options
+  </Card>
+  
+  <Card title="API Documentation" icon="book" href="/api/overview">
+    Set up auto-generated OpenAPI documentation
+  </Card>
+  
+  <Card title="Deployment" icon="cloud" href="/deployment/production">
+    Deploy to production with pb-deployer
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- **Source Repository**: [github.com/magooney-loon/pb-ext](https://github.com/magooney-loon/pb-ext)
+- **PocketBase Docs**: [pocketbase.io/docs](https://pocketbase.io/docs/)
+- **Go Documentation**: [pkg.go.dev/github.com/magooney-loon/pb-ext](https://pkg.go.dev/github.com/magooney-loon/pb-ext)
+- **Example Projects**: [github.com/magooney-loon/pb-ext/tree/main/cmd/server](https://github.com/magooney-loon/pb-ext/tree/main/cmd/server)

@@ -1,0 +1,335 @@
+---
+title: 'Options'
+description: 'Functional options for configuring pb-ext servers'
+---
+
+## Overview
+
+The `Option` type implements the functional options pattern for configuring `Server` instances. Options control PocketBase initialization, developer mode, and configuration injection.
+
+## Type Definition
+
+```go
+type Option func(*options)
+```
+
+Location: `core/server/server_options.go:23`
+
+The `Option` type is a function that modifies internal server options. Multiple options can be passed to `New()` and are applied in order.
+
+## Available Options
+
+### WithConfig
+
+Sets the PocketBase configuration to use when creating a new PocketBase instance.
+
+```go
+func WithConfig(config *pocketbase.Config) Option
+```
+
+**Parameters:**
+
+<ParamField path="config" type="*pocketbase.Config" required>
+  PocketBase configuration object. Supports all standard PocketBase config options including `DefaultDev`, `DefaultDataDir`, `DefaultDebug`, etc.
+</ParamField>
+
+**Example:**
+
+```go
+import (
+    "github.com/magooney-loon/pb-ext/core"
+    "github.com/pocketbase/pocketbase"
+)
+
+config := &pocketbase.Config{
+    DefaultDev:     true,
+    DefaultDataDir: "./custom_pb_data",
+    DefaultDebug:   false,
+}
+
+srv := core.New(core.WithConfig(config))
+```
+
+Location: `core/server/server_options.go:27`
+
+<Warning>
+  **Cannot be used with `WithPocketbase`**. These options are mutually exclusive. Using both will cause a panic with `ErrConfigurationConflict`.
+</Warning>
+
+### WithPocketbase
+
+Sets a fully initialized PocketBase instance to wrap instead of creating a new one.
+
+```go
+func WithPocketbase(pb *pocketbase.PocketBase) Option
+```
+
+**Parameters:**
+
+<ParamField path="pb" type="*pocketbase.PocketBase" required>
+  Pre-initialized PocketBase instance. Useful when you need full control over PocketBase initialization or want to share an instance.
+</ParamField>
+
+**Example:**
+
+```go
+import (
+    "github.com/magooney-loon/pb-ext/core"
+    "github.com/pocketbase/pocketbase"
+)
+
+// Create and configure PocketBase manually
+pb := pocketbase.NewWithConfig(pocketbase.Config{
+    DefaultDev:     true,
+    DefaultDataDir: "./pb_data",
+})
+
+// Add custom hooks before wrapping
+pb.OnBootstrap().BindFunc(func(e *core.BootstrapEvent) error {
+    // Custom initialization
+    return e.Next()
+})
+
+srv := core.New(core.WithPocketbase(pb))
+```
+
+Location: `core/server/server_options.go:35`
+
+<Warning>
+  **Cannot be used with `WithConfig`**. If a config is already set, this option will panic with `ErrConfigurationConflict`.
+</Warning>
+
+<Note>
+  If you enable developer mode via `InDeveloperMode()` but the provided PocketBase instance was created in production mode, a warning will be logged and the mode will **not** be changed.
+</Note>
+
+### WithMode
+
+Sets the developer mode flag programmatically.
+
+```go
+func WithMode(developerMode bool) Option
+```
+
+**Parameters:**
+
+<ParamField path="developerMode" type="bool" required>
+  - `true`: Enable developer mode (auto-migrations, debug endpoints, verbose logging)
+  - `false`: Production mode (migrations disabled, minimal logging)
+</ParamField>
+
+**Example:**
+
+```go
+import (
+    "flag"
+    "github.com/magooney-loon/pb-ext/core"
+)
+
+devMode := flag.Bool("dev", false, "Enable developer mode")
+flag.Parse()
+
+srv := core.New(core.WithMode(*devMode))
+```
+
+Location: `core/server/server_options.go:46`
+
+### InDeveloperMode
+
+Convenience function to enable developer mode (equivalent to `WithMode(true)`).
+
+```go
+func InDeveloperMode() Option
+```
+
+**Example:**
+
+```go
+import "github.com/magooney-loon/pb-ext/core"
+
+srv := core.New(core.InDeveloperMode())
+// Outputs: 🔧 Developer mode
+```
+
+Location: `core/server/server_options.go:53`
+
+**Side Effects:**
+- Logs `"🔧 Developer mode"` to stdout
+- Enables PocketBase auto-migrations
+- Enables debug endpoints
+
+### InNormalMode
+
+Convenience function to explicitly disable developer mode (equivalent to `WithMode(false)`).
+
+```go
+func InNormalMode() Option
+```
+
+**Example:**
+
+```go
+import "github.com/magooney-loon/pb-ext/core"
+
+srv := core.New(core.InNormalMode())
+// Outputs: 🚀 Production mode
+```
+
+Location: `core/server/server_options.go:61`
+
+**Side Effects:**
+- Logs `"🚀 Production mode"` to stdout
+- Disables PocketBase auto-migrations
+- Disables debug endpoints
+
+## Configuration Patterns
+
+### Pattern 1: Developer Mode Toggle
+
+```go
+func main() {
+    devMode := flag.Bool("dev", false, "Run in developer mode")
+    flag.Parse()
+    
+    var opts []core.Option
+    if *devMode {
+        opts = append(opts, core.InDeveloperMode())
+    } else {
+        opts = append(opts, core.InNormalMode())
+    }
+    
+    srv := core.New(opts...)
+    srv.Start()
+}
+```
+
+### Pattern 2: Custom Data Directory
+
+```go
+func main() {
+    config := &pocketbase.Config{
+        DefaultDataDir: "./custom_pb_data",
+    }
+    
+    srv := core.New(
+        core.WithConfig(config),
+        core.InDeveloperMode(),
+    )
+    
+    srv.Start()
+}
+```
+
+### Pattern 3: Shared PocketBase Instance
+
+```go
+func main() {
+    // Initialize PocketBase with custom hooks
+    pb := pocketbase.New()
+    
+    pb.OnBootstrap().BindFunc(func(e *core.BootstrapEvent) error {
+        // Custom early initialization
+        return e.Next()
+    })
+    
+    // Wrap with pb-ext
+    srv := core.New(core.WithPocketbase(pb))
+    
+    srv.Start()
+}
+```
+
+### Pattern 4: Environment-Based Configuration
+
+```go
+func main() {
+    env := os.Getenv("ENV")
+    
+    var opts []core.Option
+    
+    switch env {
+    case "development":
+        opts = append(opts, core.InDeveloperMode())
+        opts = append(opts, core.WithConfig(&pocketbase.Config{
+            DefaultDataDir: "./dev_data",
+            DefaultDebug:   true,
+        }))
+    case "staging":
+        opts = append(opts, core.InNormalMode())
+        opts = append(opts, core.WithConfig(&pocketbase.Config{
+            DefaultDataDir: "./staging_data",
+        }))
+    case "production":
+        opts = append(opts, core.InNormalMode())
+        opts = append(opts, core.WithConfig(&pocketbase.Config{
+            DefaultDataDir: "/var/lib/pb_data",
+        }))
+    }
+    
+    srv := core.New(opts...)
+    srv.Start()
+}
+```
+
+## Error Handling
+
+### ErrConfigurationConflict
+
+Panic error raised when both `WithConfig` and `WithPocketbase` are used together.
+
+```go
+var ErrConfigurationConflict = errors.New(
+    "WithConfig cannot be used together with WithPocketbase, cause second contains already initialized pocketbase.Config instance. Just pass your config into pocketbase.NewWithConfig func, that's enough.",
+)
+```
+
+Location: `core/server/server_options.go:18`
+
+**Example Error:**
+
+```go
+pb := pocketbase.New()
+config := &pocketbase.Config{DefaultDev: true}
+
+// This will panic!
+srv := core.New(
+    core.WithConfig(config),
+    core.WithPocketbase(pb),  // Conflict!
+)
+```
+
+**Solution:**
+
+```go
+// Option A: Configure PocketBase before wrapping
+pb := pocketbase.NewWithConfig(pocketbase.Config{
+    DefaultDev: true,
+})
+srv := core.New(core.WithPocketbase(pb))
+
+// Option B: Use WithConfig only
+srv := core.New(core.WithConfig(&pocketbase.Config{
+    DefaultDev: true,
+}))
+```
+
+## Order of Operations
+
+Options are applied in the order they are passed to `New()`. Later options override earlier ones:
+
+```go
+// developerMode will be true (last wins)
+srv := core.New(
+    core.InNormalMode(),      // Sets developerMode = false
+    core.InDeveloperMode(),   // Sets developerMode = true
+)
+```
+
+<Note>
+  While you can pass multiple mode options, it's clearer to use only one. The last option always takes precedence.
+</Note>
+
+## See Also
+
+- [Server](/reference/server) - Server type and methods
+- [PocketBase Config Docs](https://pocketbase.io/docs/api-config/) - Available PocketBase configuration options

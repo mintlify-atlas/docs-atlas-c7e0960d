@@ -1,0 +1,473 @@
+---
+title: Cron Jobs
+description: Automated task scheduling with execution tracking and structured logging
+---
+
+pb-ext includes a powerful cron job system with automatic execution logging, structured output capture, and a management API. All job executions are tracked in the `_job_logs` collection with automatic retention management.
+
+## Quick Start
+
+Register a job using the global `GetManager()` singleton:
+
+```go
+import (
+    "github.com/magooney-loon/pb-ext/core/jobs"
+    "github.com/pocketbase/pocketbase/core"
+)
+
+func registerJobs(app core.App) {
+    app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+        jm := jobs.GetManager()
+        if jm == nil {
+            return fmt.Errorf("job manager not initialized")
+        }
+        
+        return jm.RegisterJob(
+            "helloWorld",           // Job ID
+            "Hello World Job",      // Display name
+            "A simple demo job",    // Description
+            "*/5 * * * *",          // Cron expression (every 5 minutes)
+            func(el *jobs.ExecutionLogger) {
+                el.Start("Hello World Job")
+                el.Info("Processing task...")
+                el.Success("Task completed!")
+                el.Complete("Job finished successfully")
+            },
+        )
+    })
+}
+```
+
+## Cron Expression Syntax
+
+pb-ext uses standard cron expression syntax:
+
+```
+┌───────────── minute (0 - 59)
+│ ┌───────────── hour (0 - 23)
+│ │ ┌───────────── day of month (1 - 31)
+│ │ │ ┌───────────── month (1 - 12)
+│ │ │ │ ┌───────────── day of week (0 - 6) (Sunday to Saturday)
+│ │ │ │ │
+│ │ │ │ │
+* * * * *
+```
+
+### Common Patterns
+
+| Expression | Description |
+|------------|-------------|
+| `*/5 * * * *` | Every 5 minutes |
+| `0 2 * * *` | Daily at 2 AM |
+| `0 0 * * 0` | Every Sunday at midnight |
+| `0 3 * * *` | Daily at 3 AM |
+| `0 0 1 * *` | First day of every month at midnight |
+| `30 14 * * 1-5` | Weekdays at 2:30 PM |
+
+## ExecutionLogger Methods
+
+The `ExecutionLogger` provides structured logging methods for job output:
+
+### Basic Logging
+
+```go
+func(el *jobs.ExecutionLogger) {
+    el.Start("Job Name")              // 🚀 Starting job: Job Name
+    el.Info("Message %s", value)      // [INFO] Message
+    el.Debug("Debug info")            // [DEBUG] Debug info
+    el.Warn("Warning message")        // [WARN] Warning message
+    el.Error("Error: %v", err)        // [ERROR] Error: ...
+}
+```
+
+### Status Indicators
+
+```go
+el.Progress("Processing %d items...", count)  // 🔄 Processing 100 items...
+el.Success("Operation completed")             // ✅ Operation completed
+```
+
+### Completion Methods
+
+```go
+// Successful completion
+el.Complete("Processed 50 records")
+
+// Failure
+el.Fail(fmt.Errorf("database connection failed"))
+```
+
+### Statistics Reporting
+
+```go
+el.Statistics(map[string]interface{}{
+    "total_found": 100,
+    "deleted":     95,
+    "failed":      5,
+})
+// Output:
+// 📊 Statistics:
+//    • total_found: 100
+//    • deleted: 95
+//    • failed: 5
+```
+
+## Real-World Examples
+
+### Example 1: Daily Cleanup Job
+
+From `cmd/server/jobs.go:55`:
+
+```go
+func dailyCleanupJob(app core.App) error {
+    jm := jobs.GetManager()
+    return jm.RegisterJob("dailyCleanup", "Daily Cleanup Job",
+        "Automated maintenance job that runs daily at 2 AM to clean up completed todos older than 30 days",
+        "0 2 * * *", func(el *jobs.ExecutionLogger) {
+            el.Start("Daily Cleanup Job")
+            el.Info("Cleanup job started at: %s", time.Now().Format("2006-01-02 15:04:05"))
+
+            collection, err := app.FindCollectionByNameOrId("todos")
+            if err != nil {
+                el.Error("Failed to find todos collection: %v", err)
+                el.Fail(err)
+                return
+            }
+
+            el.Success("Found todos collection, proceeding with cleanup...")
+
+            cutoffDate := time.Now().AddDate(0, 0, -30)
+            el.Info("Cleaning up todos older than: %s", cutoffDate.Format("2006-01-02"))
+
+            filter := "completed = true && created < {:cutoff}"
+            records, err := app.FindRecordsByFilter(collection, filter, "", 100, 0, map[string]any{
+                "cutoff": cutoffDate.Format("2006-01-02 15:04:05.000Z"),
+            })
+            if err != nil {
+                el.Error("Failed to find old todos: %v", err)
+                el.Fail(err)
+                return
+            }
+
+            el.Info("Found %d old completed todos to clean up", len(records))
+
+            deletedCount := 0
+            for _, record := range records {
+                if err := app.Delete(record); err != nil {
+                    el.Error("Failed to delete todo %s: %v", record.Id, err)
+                } else {
+                    deletedCount++
+                }
+            }
+
+            el.Statistics(map[string]interface{}{
+                "total_found": len(records),
+                "deleted":     deletedCount,
+                "failed":      len(records) - deletedCount,
+            })
+
+            el.Complete(fmt.Sprintf("Deleted %d/%d records", deletedCount, len(records)))
+        })
+}
+```
+
+### Example 2: Weekly Statistics Report
+
+From `cmd/server/jobs.go:115`:
+
+```go
+func weeklyStatsJob(app core.App) error {
+    jm := jobs.GetManager()
+    return jm.RegisterJob("weeklyStats", "Weekly Statistics Job",
+        "Weekly analytics job that runs every Sunday at midnight",
+        "0 0 * * 0", func(el *jobs.ExecutionLogger) {
+            el.Start("Weekly Statistics Job")
+            el.Info("Generating weekly report for week ending: %s", time.Now().Format("2006-01-02"))
+
+            collection, err := app.FindCollectionByNameOrId("todos")
+            if err != nil {
+                el.Error("Failed to find todos collection: %v", err)
+                el.Fail(err)
+                return
+            }
+
+            el.Success("Found todos collection, analyzing data...")
+
+            weekAgo := time.Now().AddDate(0, 0, -7)
+            filter := "created >= {:week_ago}"
+            records, err := app.FindRecordsByFilter(collection, filter, "", 1000, 0, map[string]any{
+                "week_ago": weekAgo.Format("2006-01-02 15:04:05.000Z"),
+            })
+            if err != nil {
+                el.Error("Failed to fetch weekly todos: %v", err)
+                el.Fail(err)
+                return
+            }
+
+            el.Progress("Processing %d todos from the past week...", len(records))
+
+            completed, pending := 0, 0
+            for _, record := range records {
+                if record.GetBool("completed") {
+                    completed++
+                } else {
+                    pending++
+                }
+            }
+
+            completionRate := float64(0)
+            if len(records) > 0 {
+                completionRate = float64(completed) / float64(len(records)) * 100
+            }
+
+            el.Info("WEEKLY STATISTICS REPORT")
+            el.Statistics(map[string]interface{}{
+                "Total todos created": len(records),
+                "Completed todos":     completed,
+                "Pending todos":       pending,
+                "Completion rate":     fmt.Sprintf("%.1f%%", completionRate),
+            })
+            el.Complete("Weekly statistics report generated successfully")
+        })
+}
+```
+
+### Example 3: Simple Periodic Task
+
+From `cmd/server/jobs.go:35`:
+
+```go
+func helloJob(app core.App) error {
+    jm := jobs.GetManager()
+    return jm.RegisterJob("helloWorld", "Hello World Job",
+        "A simple demonstration job that runs every 5 minutes",
+        "*/5 * * * *", func(el *jobs.ExecutionLogger) {
+            el.Start("Hello World Job")
+            el.Info("Current time: %s", time.Now().Format("2006-01-02 15:04:05"))
+            el.Progress("Processing hello world task...")
+
+            // Simulate some work
+            time.Sleep(100 * time.Millisecond)
+
+            el.Success("Hello from cron job! Task completed successfully.")
+            el.Complete(fmt.Sprintf("Job finished at: %s", time.Now().Format("2006-01-02 15:04:05")))
+        })
+}
+```
+
+## Job Management API
+
+All endpoints require superuser authentication.
+
+### List Jobs
+
+```bash
+GET /api/cron/jobs
+```
+
+**Response:**
+```json
+{
+  "jobs": [
+    {
+      "id": "helloWorld",
+      "name": "Hello World Job",
+      "description": "A simple demonstration job",
+      "expression": "*/5 * * * *",
+      "is_system_job": false,
+      "is_active": true
+    }
+  ]
+}
+```
+
+### Trigger Job Manually
+
+```bash
+POST /api/cron/jobs/{id}/run
+```
+
+**Response:**
+```json
+{
+  "message": "Job triggered successfully",
+  "success": true,
+  "data": {
+    "job_id": "helloWorld",
+    "success": true,
+    "duration": 105234000,
+    "output": "[2026-03-04 15:04:05.123] [INFO] [helloWorld] 🚀 Starting job: Hello World Job\n...",
+    "trigger_type": "manual",
+    "executed_at": "2026-03-04T15:04:05Z"
+  }
+}
+```
+
+### Remove Job
+
+```bash
+DELETE /api/cron/jobs/{id}
+```
+
+### Get Scheduler Status
+
+```bash
+GET /api/cron/status
+```
+
+**Response:**
+```json
+{
+  "total_jobs": 5,
+  "system_jobs": 2,
+  "user_jobs": 3,
+  "active_jobs": 5,
+  "status": "running",
+  "has_started": true
+}
+```
+
+### Update Timezone
+
+```bash
+POST /api/cron/config/timezone
+Content-Type: application/json
+
+{
+  "timezone": "America/New_York"
+}
+```
+
+### Get Execution Logs
+
+```bash
+GET /api/cron/logs?page=1&per_page=20
+GET /api/cron/logs/{job_id}
+GET /api/cron/logs/analytics
+```
+
+## System Jobs
+
+pb-ext automatically registers internal maintenance jobs. These appear in the dashboard with a "System" badge.
+
+### `__pbExtLogClean__`
+
+From `core/jobs/manager.go:287`:
+
+- **Schedule:** `0 0 * * *` (daily at midnight)
+- **Purpose:** Purges `_job_logs` records older than 72 hours
+- **Retention:** 72 hours
+
+### `__pbExtAnalyticsClean__`
+
+From `core/jobs/manager.go:353`:
+
+- **Schedule:** `0 3 * * *` (daily at 3 AM)
+- **Purpose:** Deletes `_analytics` rows older than 90 days
+- **Retention:** 90 days
+
+## Job Execution Storage
+
+### Collection Schema
+
+Job logs are stored in the `_job_logs` system collection:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `job_id` | text | Job identifier |
+| `job_name` | text | Display name |
+| `description` | text | Job description |
+| `expression` | text | Cron expression |
+| `start_time` | datetime | Execution start |
+| `end_time` | datetime | Execution end |
+| `duration` | number | Duration in milliseconds |
+| `status` | text | `started`, `completed`, `failed`, `timeout` |
+| `output` | text | Captured log output |
+| `error` | text | Error message if failed |
+| `trigger_type` | text | `scheduled` or `manual` |
+| `trigger_by` | text | User ID if manual |
+
+### Automatic Cleanup
+
+From `core/jobs/logger.go:343`:
+
+- Logs older than 72 hours are automatically deleted
+- Cleanup runs during flush operations
+- Orphaned jobs (stuck in "started" status) are marked as "timeout" on startup
+
+### Buffer and Flush
+
+From `core/jobs/logger.go:14`:
+
+- Logs are buffered in memory
+- Flush interval: 30 seconds
+- Batch size: 100 records
+- Manual flush via `ForceFlush()`
+
+## Error Handling
+
+Jobs that panic are automatically recovered:
+
+```go
+func(el *jobs.ExecutionLogger) {
+    el.Start("Risky Job")
+    
+    // If this panics, it's caught and logged
+    riskyOperation()
+    
+    el.Complete("Success")
+}
+```
+
+From `core/jobs/manager.go:417`:
+
+```go
+defer func() {
+    if r := recover(); r != nil {
+        errorMsg = fmt.Sprintf("Job panic: %v", r)
+        execLogger.Fail(fmt.Errorf("%s", errorMsg))
+    }
+}()
+```
+
+## Best Practices
+
+1. **Use descriptive job IDs and names** for easy identification in logs
+2. **Always call `el.Start()` and `el.Complete()` or `el.Fail()`** to properly track execution
+3. **Use `el.Statistics()` for structured data** instead of multiple Info calls
+4. **Handle errors gracefully** with `el.Error()` and `el.Fail()`
+5. **Test jobs manually** using the `/api/cron/jobs/{id}/run` endpoint
+6. **Keep job execution time reasonable** (under 1 minute preferred)
+7. **Use Progress() for long-running operations** to show intermediate status
+8. **Validate collection existence** before performing database operations
+
+## Dashboard Integration
+
+View job status and logs in the pb-ext dashboard at `/_/_`:
+
+- Recent job executions with status indicators
+- Success/failure rates per job
+- Average execution time
+- Manual job triggering
+- Live execution logs
+
+## Advanced: Manual Execution
+
+From `core/jobs/manager.go:86`:
+
+```go
+jm := jobs.GetManager()
+result, err := jm.ExecuteJobManually("helloWorld", "admin_user_id")
+if err != nil {
+    log.Printf("Job failed: %v", err)
+} else {
+    log.Printf("Job completed in %v", result.Duration)
+    log.Printf("Output: %s", result.Output)
+}
+```
+
+## Related
+
+- [Monitoring](/features/monitoring) - System metrics tracking
+- [Logging](/features/logging) - Application logging system
+- [Dashboard](/features/dashboard) - Management UI

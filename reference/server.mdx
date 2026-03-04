@@ -1,0 +1,286 @@
+---
+title: 'Server'
+description: 'Core server type that wraps PocketBase with production-ready features'
+---
+
+## Overview
+
+The `Server` type is the main entry point for pb-ext applications. It wraps a PocketBase instance and adds production-ready features including analytics, job management, health monitoring, and structured logging.
+
+## Type Definition
+
+```go
+type Server struct {
+    app         *pocketbase.PocketBase
+    stats       *ServerStats
+    analytics   *analytics.Analytics
+    jobManager  *jobs.Manager
+    jobHandlers *jobs.Handlers
+    options     *options
+}
+```
+
+Location: `core/server/server.go:18`
+
+## Constructor
+
+### New
+
+Creates a new Server instance with optional configuration.
+
+```go
+func New(opts ...Option) *Server
+```
+
+**Parameters:**
+
+<ParamField path="opts" type="...Option">
+  Variadic functional options for configuring the server. See [Options](/reference/options) for available options.
+</ParamField>
+
+**Returns:** `*Server` - A configured server instance ready to start.
+
+**Example:**
+
+```go
+import "github.com/magooney-loon/pb-ext/core"
+
+// Basic server with developer mode
+srv := core.New(core.InDeveloperMode())
+
+// Server with custom configuration
+config := &pocketbase.Config{
+    DefaultDev:     true,
+    DefaultDataDir: "./custom_pb_data",
+}
+srv := core.New(core.WithConfig(config))
+
+// Multiple options
+srv := core.New(
+    core.InDeveloperMode(),
+    core.WithConfig(config),
+)
+```
+
+Location: `core/server/server.go:43`
+
+<Note>
+  The constructor initializes the server but does not start it. Call `Start()` to begin serving requests.
+</Note>
+
+## Methods
+
+### Start
+
+Initializes and starts the server, including all subsystems (analytics, jobs, health monitoring).
+
+```go
+func (s *Server) Start() error
+```
+
+**Returns:** `error` - Returns an error if the server fails to start, nil otherwise.
+
+**Lifecycle:**
+
+1. **Bootstrap Phase** (`OnBootstrap`):
+   - Initializes job management system
+   - Registers internal system jobs
+   - Sets up job handlers
+
+2. **Serve Phase** (`OnServe`):
+   - Registers request tracking middleware
+   - Initializes analytics system
+   - Registers job API routes
+   - Serves static files from `pb_public/`
+   - Starts the HTTP server
+
+**Example:**
+
+```go
+srv := core.New(core.InDeveloperMode())
+
+// Setup logging
+core.SetupLogging(srv)
+
+// Register your routes
+srv.App().OnServe().BindFunc(func(e *core.ServeEvent) error {
+    // Your route registration here
+    return e.Next()
+})
+
+// Start the server
+if err := srv.Start(); err != nil {
+    log.Fatal(err)
+}
+```
+
+Location: `core/server/server.go:80`
+
+<Warning>
+  `Start()` is a blocking call. It will run until the server is stopped or encounters a fatal error.
+</Warning>
+
+### App
+
+Returns the underlying PocketBase instance for direct access to PocketBase APIs.
+
+```go
+func (s *Server) App() *pocketbase.PocketBase
+```
+
+**Returns:** `*pocketbase.PocketBase` - The wrapped PocketBase instance.
+
+**Example:**
+
+```go
+srv := core.New()
+
+// Access PocketBase directly
+app := srv.App()
+
+// Use PocketBase hooks
+app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+    e.Router.GET("/api/hello", func(c *core.RequestEvent) error {
+        return c.String(200, "Hello, World!")
+    })
+    return e.Next()
+})
+
+// Access logger
+app.Logger().Info("Server initialized")
+
+// Access database
+db := app.DB()
+```
+
+Location: `core/server/server.go:260`
+
+### Stats
+
+Returns the current server statistics.
+
+```go
+func (s *Server) Stats() *ServerStats
+```
+
+**Returns:** `*ServerStats` - Server statistics including request counts, active connections, and timing data.
+
+**Example:**
+
+```go
+srv := core.New()
+
+stats := srv.Stats()
+
+fmt.Printf("Start Time: %v\n", stats.StartTime)
+fmt.Printf("Total Requests: %d\n", stats.TotalRequests.Load())
+fmt.Printf("Active Connections: %d\n", stats.ActiveConnections.Load())
+fmt.Printf("Last Request: %v\n", time.Unix(stats.LastRequestTime.Load(), 0))
+fmt.Printf("Avg Request Time: %v\n", time.Duration(stats.AverageRequestTime.Load()))
+```
+
+Location: `core/server/server.go:265`
+
+## ServerStats Type
+
+Tracks real-time server metrics using atomic operations for thread-safe access.
+
+```go
+type ServerStats struct {
+    StartTime          time.Time
+    TotalRequests      atomic.Uint64
+    ActiveConnections  atomic.Int32
+    LastRequestTime    atomic.Int64  // Unix timestamp
+    TotalErrors        atomic.Uint64
+    AverageRequestTime atomic.Int64  // nanoseconds
+}
+```
+
+Location: `core/server/server.go:28`
+
+### Fields
+
+<ResponseField name="StartTime" type="time.Time">
+  Server startup timestamp (not atomic, set once at initialization).
+</ResponseField>
+
+<ResponseField name="TotalRequests" type="atomic.Uint64">
+  Total number of HTTP requests processed. Excludes `/service-worker.js`, `/favicon.ico`, and `/manifest.json`.
+  
+  **Access:** `stats.TotalRequests.Load()`
+</ResponseField>
+
+<ResponseField name="ActiveConnections" type="atomic.Int32">
+  Current number of active HTTP connections being processed.
+  
+  **Access:** `stats.ActiveConnections.Load()`
+</ResponseField>
+
+<ResponseField name="LastRequestTime" type="atomic.Int64">
+  Unix timestamp (seconds) of the last processed request.
+  
+  **Access:** `time.Unix(stats.LastRequestTime.Load(), 0)`
+</ResponseField>
+
+<ResponseField name="TotalErrors" type="atomic.Uint64">
+  Total number of requests that returned errors.
+  
+  **Access:** `stats.TotalErrors.Load()`
+</ResponseField>
+
+<ResponseField name="AverageRequestTime" type="atomic.Int64">
+  Rolling average request processing time in nanoseconds.
+  
+  **Access:** `time.Duration(stats.AverageRequestTime.Load())`
+</ResponseField>
+
+<Note>
+  All numeric fields use atomic types for thread-safe concurrent access. Use the `.Load()` method to read values.
+</Note>
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "log"
+    "time"
+    
+    "github.com/magooney-loon/pb-ext/core"
+    "github.com/pocketbase/pocketbase/core"
+)
+
+func main() {
+    // Create server with developer mode
+    srv := core.New(core.InDeveloperMode())
+    
+    // Setup logging
+    core.SetupLogging(srv)
+    
+    // Register custom routes
+    srv.App().OnServe().BindFunc(func(e *core.ServeEvent) error {
+        e.Router.GET("/api/status", func(c *core.RequestEvent) error {
+            stats := srv.Stats()
+            return c.JSON(200, map[string]any{
+                "uptime":             time.Since(stats.StartTime).String(),
+                "total_requests":     stats.TotalRequests.Load(),
+                "active_connections": stats.ActiveConnections.Load(),
+            })
+        })
+        return e.Next()
+    })
+    
+    // Start server (blocking)
+    if err := srv.Start(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+## See Also
+
+- [Options](/reference/options) - Server configuration options
+- [Jobs](/features/cron-jobs) - Cron job management
+- [Analytics](/features/analytics) - Request analytics and visitor tracking
+- [Health Dashboard](/features/dashboard) - Built-in monitoring dashboard

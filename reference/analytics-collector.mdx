@@ -1,0 +1,419 @@
+---
+title: Analytics Collector
+description: Privacy-focused visitor analytics collection
+---
+
+## Overview
+
+The Analytics system tracks page views using aggregated daily counters and a session ring buffer. No personal data (IP addresses, user agents, visitor IDs) is persisted to the database.
+
+## Type Definition
+
+```go
+type Analytics struct {
+    app           core.App
+    knownVisitors map[string]time.Time  // ephemeral in-memory session map
+    visitorsMu    sync.RWMutex
+    sessionWindow time.Duration
+}
+```
+
+<Note>
+**Privacy by Design**: The `knownVisitors` map uses FNV-1a hashes of (IP+UserAgent) for session deduplication. These hashes exist only in memory and are **never** written to the database.
+</Note>
+
+## Initialization
+
+### Initialize
+
+```go
+func Initialize(app core.App) (*Analytics, error)
+```
+
+Creates analytics system, sets up collections, and starts background workers.
+
+<ParamField path="app" type="core.App" required>
+  PocketBase application instance
+</ParamField>
+
+**Returns:**
+- `*Analytics` - Initialized analytics instance
+- `error` - Error if collection setup fails
+
+**Location:** `core/analytics/analytics.go:33`
+
+**Process:**
+1. Creates `_analytics` collection (daily aggregated counters)
+2. Creates `_analytics_sessions` collection (recent visit ring buffer)
+3. Starts session cleanup worker (runs every 30 minutes)
+
+**Example:**
+```go
+analytics, err := analytics.Initialize(app)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Route Registration
+
+### RegisterRoutes
+
+```go
+func (a *Analytics) RegisterRoutes(e *core.ServeEvent)
+```
+
+Attaches request tracking middleware to the router.
+
+<ParamField path="e" type="*core.ServeEvent" required>
+  ServeEvent to bind middleware
+</ParamField>
+
+**Location:** `core/analytics/collector.go:15`
+
+**Example:**
+```go
+analytics, _ := analytics.Initialize(app)
+
+app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+    analytics.RegisterRoutes(e)
+    return e.Next()
+})
+```
+
+## Tracking Behavior
+
+### What Gets Tracked
+
+The system tracks:
+
+<ParamField path="path" type="string">
+  Request URL path
+</ParamField>
+
+<ParamField path="device_type" type="string">
+  Device category: `"desktop"`, `"mobile"`, `"tablet"`
+</ParamField>
+
+<ParamField path="browser" type="string">
+  Browser: `"chrome"`, `"firefox"`, `"safari"`, `"edge"`, `"opera"`, `"unknown"`
+</ParamField>
+
+<ParamField path="os" type="string">
+  Operating system: `"windows"`, `"macos"`, `"linux"`, `"ios"`, `"ipados"`, `"android"`, `"unknown"`
+</ParamField>
+
+<ParamField path="is_new_session" type="boolean">
+  Whether this is a new session (first visit within 30-minute window)
+</ParamField>
+
+### What Does NOT Get Tracked
+
+- IP addresses (used only for session hashing, never stored)
+- Full user agents (used only for parsing, never stored)
+- Visitor IDs or cookies
+- Personal information
+- Query parameters
+- Request headers
+
+### Excluded Paths
+
+These paths are automatically excluded from tracking:
+
+**API and System Routes:**
+- `/api/*`
+- `/_/*`
+- `/_app/immutable/*`
+- `/.well-known/*`
+
+**Common Files:**
+- `/favicon.ico`
+- `/service-worker.js`
+- `/manifest.json`
+- `/robots.txt`
+
+**Static Files:**
+- CSS: `.css`
+- JavaScript: `.js`, `.json`, `.map`
+- Images: `.png`, `.jpg`, `.jpeg`, `.gif`, `.svg`, `.ico`, `.webp`, `.bmp`, `.tiff`, `.tif`, `.heic`, `.heif`, `.avif`
+- Video: `.mp4`, `.webm`, `.ogg`, `.ogv`, `.mov`, `.avi`, `.wmv`, `.flv`, `.mkv`, `.m4v`, `.3gp`
+- Audio: `.mp3`, `.wav`, `.flac`, `.aac`, `.m4a`, `.wma`, `.opus`
+- Documents: `.pdf`, `.doc`, `.docx`, `.xls`, `.xlsx`, `.ppt`, `.pptx`, `.txt`, `.rtf`, `.csv`, `.md`
+- Archives: `.zip`, `.rar`, `.7z`, `.tar`, `.gz`, `.bz2`
+- Fonts: `.woff`, `.woff2`, `.ttf`, `.eot`, `.otf`
+
+**Location:** `core/analytics/collector.go:204`
+
+### Bot Detection
+
+Requests from these user agents are excluded:
+
+- `bot`, `crawler`, `spider`
+- `lighthouse`, `pagespeed`, `prerender`
+- `headless`, `pingdom`
+- `googlebot`, `baiduspider`, `bingbot`
+- `yandex`, `facebookexternalhit`
+- `ahrefsbot`, `semrushbot`
+- `screaming frog`
+- Empty user agent strings
+
+**Location:** `core/analytics/collector.go:255`
+
+## Session Management
+
+### Session Window
+
+Default session window: **30 minutes**
+
+A visitor is considered "new" if they haven't been seen within the last 30 minutes.
+
+### Session Hash
+
+Sessions are tracked using FNV-1a hashes:
+
+```go
+func sessionHash(ip, ua string) string
+```
+
+**Properties:**
+- Fast, non-cryptographic hash
+- 64-bit hash value (16-character hex string)
+- Deterministic (same IP+UA always produces same hash)
+- Collision-resistant for practical purposes
+- **Never written to database**
+
+**Location:** `core/analytics/collector.go:142`
+
+### Session Cleanup
+
+Background worker runs every 30 minutes to remove expired sessions from memory:
+
+```go
+func (a *Analytics) sessionCleanupWorker()
+```
+
+**Location:** `core/analytics/analytics.go:47`
+
+## Data Storage
+
+### Daily Counters (_analytics)
+
+Aggregated view counts stored as:
+
+```sql
+CREATE TABLE _analytics (
+    path TEXT,
+    date TEXT,
+    device_type TEXT,
+    browser TEXT,
+    views INTEGER,
+    unique_sessions INTEGER,
+    UNIQUE(path, date, device_type, browser)
+);
+```
+
+**Upsert Logic:**
+```sql
+INSERT INTO _analytics (path, date, device_type, browser, views, unique_sessions)
+VALUES (?, ?, ?, ?, 1, ?)
+ON CONFLICT (path, date, device_type, browser)
+DO UPDATE SET
+    views = views + 1,
+    unique_sessions = unique_sessions + excluded.unique_sessions
+```
+
+**Location:** `core/analytics/collector.go:62`
+
+### Session Ring Buffer (_analytics_sessions)
+
+Recent visits stored as ring buffer (max 50 entries):
+
+```sql
+CREATE TABLE _analytics_sessions (
+    path TEXT,
+    device_type TEXT,
+    browser TEXT,
+    os TEXT,
+    timestamp DATETIME,
+    is_new_session BOOLEAN
+);
+```
+
+**Pruning:**
+```sql
+DELETE FROM _analytics_sessions
+WHERE rowid NOT IN (
+    SELECT rowid FROM _analytics_sessions
+    ORDER BY created DESC LIMIT 50
+)
+```
+
+**Location:** `core/analytics/collector.go:103`
+
+## Complete Examples
+
+### Basic Setup
+
+```go
+package main
+
+import (
+    "github.com/magooney-loon/pb-ext/core/analytics"
+    "github.com/pocketbase/pocketbase"
+)
+
+func main() {
+    app := pocketbase.New()
+    
+    // Initialize analytics
+    a, err := analytics.Initialize(app)
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    // Register tracking middleware
+    app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+        a.RegisterRoutes(e)
+        return e.Next()
+    })
+    
+    app.Start()
+}
+```
+
+### Custom Session Window
+
+```go
+func setupAnalyticsWithCustomWindow(app core.App) (*analytics.Analytics, error) {
+    a := analytics.New(app)
+    
+    // Set custom session window (1 hour)
+    a.sessionWindow = 60 * time.Minute
+    
+    if err := analytics.SetupCollections(app); err != nil {
+        return nil, err
+    }
+    
+    go a.sessionCleanupWorker()
+    
+    return a, nil
+}
+```
+
+### Conditional Tracking
+
+```go
+func setupConditionalTracking(app core.App, config Config) {
+    if !config.AnalyticsEnabled {
+        return
+    }
+    
+    a, _ := analytics.Initialize(app)
+    
+    app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+        // Only track in production
+        if config.Environment == "production" {
+            a.RegisterRoutes(e)
+        }
+        return e.Next()
+    })
+}
+```
+
+### Testing Analytics
+
+```go
+func TestAnalyticsTracking(t *testing.T) {
+    app := pocketbase.New()
+    
+    a, err := analytics.Initialize(app)
+    if err != nil {
+        t.Fatal(err)
+    }
+    
+    app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+        a.RegisterRoutes(e)
+        e.Router.GET("/", func(c *core.RequestEvent) error {
+            return c.JSON(200, map[string]string{"status": "ok"})
+        })
+        return e.Next()
+    })
+    
+    // Start server
+    go app.Start()
+    defer app.ResetBootstrapState()
+    
+    // Make request
+    resp, _ := http.Get("http://localhost:8090/")
+    resp.Body.Close()
+    
+    // Give async tracking time to complete
+    time.Sleep(100 * time.Millisecond)
+    
+    // Verify tracking
+    data, _ := a.GetData()
+    if data.TotalPageViews == 0 {
+        t.Error("Expected page view to be tracked")
+    }
+}
+```
+
+## User Agent Parsing
+
+```go
+func parseUA(userAgent string) (deviceType, browser, os string)
+```
+
+**Device Type Detection:**
+- Contains "mobile" or "android" → `"mobile"`
+- Contains "tablet" or "ipad" → `"tablet"`
+- Default → `"desktop"`
+
+**Browser Detection:**
+- Contains "chrome" (not "edg") → `"chrome"`
+- Contains "firefox" → `"firefox"`
+- Contains "safari" (not "chrome") → `"safari"`
+- Contains "edg" → `"edge"`
+- Contains "opera" → `"opera"`
+- Default → `"unknown"`
+
+**OS Detection:**
+- Contains "windows" → `"windows"`
+- Contains "macintosh" or "mac os" → `"macos"`
+- Contains "linux" (not "android") → `"linux"`
+- Contains "iphone" → `"ios"`
+- Contains "ipad" → `"ipados"`
+- Contains "android" → `"android"`
+- Default → `"unknown"`
+
+**Location:** `core/analytics/collector.go:156`
+
+## Constants
+
+```go
+const (
+    LookbackDays            = 90
+    MaxExpectedHourlyVisits = 100
+    CollectionName          = "_analytics"
+    SessionsCollectionName  = "_analytics_sessions"
+    SessionRingSize         = 50
+)
+```
+
+**Location:** `core/analytics/types.go:6`
+
+## Best Practices
+
+1. **Privacy First**: Never log or store IP addresses or personal data
+2. **GDPR Compliance**: System is designed for GDPR compliance (no cookies, no personal data)
+3. **Performance**: Tracking happens after response is sent (non-blocking)
+4. **Data Retention**: Clean up old analytics data (90-day retention recommended)
+5. **Bot Filtering**: Rely on built-in bot detection, don't reinvent
+6. **Session Window**: 30 minutes is standard, adjust based on your use case
+7. **Testing**: Test with real user agents, not synthetic ones
+
+## Related
+
+- [Analytics Storage](/reference/analytics-storage) - Data retrieval and aggregation
+- [Analytics Dashboard](/features/dashboard) - Viewing analytics in the UI
+- [Privacy Guide](/features/analytics) - Privacy-focused design principles

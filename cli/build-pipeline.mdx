@@ -1,0 +1,934 @@
+---
+title: Build Pipeline
+description: Deep dive into how pb-cli orchestrates builds, tests, and production deployments
+icon: pipe
+---
+
+## Overview
+
+The pb-cli build pipeline orchestrates the entire lifecycle from source code to production-ready artifacts. Understanding this pipeline helps you:
+
+- Debug build failures
+- Optimize build times
+- Customize the build process
+- Integrate with CI/CD systems
+
+<Info>
+  pb-cli is built on top of `pkg/scripts`, which provides programmatic access to all build operations.
+</Info>
+
+## Architecture
+
+```
+cmd/pb-cli/main.go          → CLI entry point
+    ↓
+pkg/scripts/cli.go          → Flag parsing & mode selection
+    ↓
+pkg/scripts/internal/       → Build operation modules
+├── build.go                → Frontend & OpenAPI builds
+├── server.go               → Server execution
+├── production.go           → Production builds
+├── test.go                 → Test suite
+├── deps.go                 → Dependency management
+├── system.go               → System validation
+└── utils.go                → Output formatting
+```
+
+---
+
+## Pipeline Stages
+
+### 1. Mode Selection
+
+**File:** `pkg/scripts/cli.go:51-62`
+
+Based on flags, pb-cli selects the appropriate mode:
+
+```go
+switch {
+case *testOnly:
+    err = handleTestOnlyMode(rootDir, *distDir)
+case *production:
+    err = handleProductionMode(rootDir, *installDeps, *distDir)
+case *buildOnly:
+    err = handleBuildOnlyMode(rootDir, *installDeps)
+case *runOnly:
+    err = handleRunOnlyMode(rootDir)
+default:
+    err = handleDevelopmentMode(rootDir, *installDeps)
+}
+```
+
+### 2. System Validation
+
+**File:** `pkg/scripts/internal/system.go`
+
+Before any operation, pb-cli validates:
+
+- **Go toolchain:** `go version` (requires 1.19+)
+- **Node.js:** `node --version` (requires 16+)
+- **npm:** `npm --version` (requires 8+)
+- **Git:** `git --version` (for version control)
+
+Failure at this stage aborts the build immediately.
+
+### 3. Dependency Installation
+
+**File:** `pkg/scripts/internal/deps.go`
+
+#### Go Dependencies
+
+```go
+// pkg/scripts/internal/deps.go:28-49
+func InstallGoDependencies(rootDir string) error {
+    // Step 1: Tidy modules
+    cmd := exec.Command("go", "mod", "tidy")
+    cmd.Dir = rootDir
+    if err := cmd.Run(); err != nil {
+        return fmt.Errorf("go mod tidy failed: %w", err)
+    }
+
+    // Step 2: Download dependencies
+    cmd = exec.Command("go", "mod", "download")
+    cmd.Dir = rootDir
+    if err := cmd.Run(); err != nil {
+        return fmt.Errorf("go mod download failed: %w", err)
+    }
+
+    return nil
+}
+```
+
+#### npm Dependencies
+
+```go
+// pkg/scripts/internal/deps.go:52-76
+func InstallNpmDependencies(frontendDir string) error {
+    packageLockPath := filepath.Join(frontendDir, "package-lock.json")
+    var cmd *exec.Cmd
+
+    if _, err := os.Stat(packageLockPath); err == nil {
+        // Use npm ci for reproducible builds
+        cmd = exec.Command("npm", "ci")
+    } else {
+        // Fall back to npm install
+        cmd = exec.Command("npm", "install")
+    }
+
+    cmd.Dir = frontendDir
+    return cmd.Run()
+}
+```
+
+<Info>
+  `npm ci` is preferred when `package-lock.json` exists because it ensures reproducible builds by strictly following the lock file.
+</Info>
+
+### 4. Frontend Build Process
+
+**File:** `pkg/scripts/internal/build.go`
+
+#### Frontend Type Detection
+
+```go
+// pkg/scripts/internal/build.go:21-36
+func DetectFrontendType(frontendDir string) FrontendType {
+    // Check if frontend directory exists
+    if _, err := os.Stat(frontendDir); os.IsNotExist(err) {
+        return FrontendTypeNone
+    }
+
+    // Check for package.json (npm-based)
+    packageJSON := filepath.Join(frontendDir, "package.json")
+    if _, err := os.Stat(packageJSON); err == nil {
+        return FrontendTypeNpm
+    }
+
+    // Static files only
+    return FrontendTypeStatic
+}
+```
+
+Build strategy varies by type:
+
+<Tabs>
+  <Tab title="npm-based Frontend">
+    ```go
+    // 1. Run npm install (if --install)
+    InstallNpmDependencies(frontendDir)
+
+    // 2. Run npm run build
+    cmd := exec.Command("npm", "run", "build")
+    cmd.Dir = frontendDir
+    cmd.Run()
+
+    // 3. Find build output directory
+    buildDir := FindBuildDirectory(frontendDir)
+    // Searches for: build/, dist/, static/
+
+    // 4. Copy to pb_public/
+    copyDir(buildDir, "pb_public/")
+    ```
+  </Tab>
+  
+  <Tab title="Static Files">
+    ```go
+    // Copy all files from frontend/ to pb_public/
+    CopyStaticFiles(rootDir, frontendDir)
+    ```
+  </Tab>
+  
+  <Tab title="No Frontend">
+    ```go
+    // Skip frontend build steps
+    PrintSubItem("i", "No frontend found, skipping")
+    ```
+  </Tab>
+</Tabs>
+
+#### Build Output Detection
+
+```go
+// pkg/scripts/internal/build.go:322-353
+func FindBuildDirectory(frontendDir string) (string, error) {
+    // Try common build directories
+    possibleDirs := []string{"build", "dist", "static"}
+
+    for _, dir := range possibleDirs {
+        buildDir := filepath.Join(frontendDir, dir)
+        if _, err := os.Stat(buildDir); err == nil {
+            return buildDir, nil
+        }
+    }
+
+    // Fall back to frontend directory itself if it has files
+    // (for frameworks that build in-place)
+    return frontendDir, nil
+}
+```
+
+### 5. OpenAPI Spec Generation
+
+**File:** `pkg/scripts/internal/build.go:149-191`
+
+Only runs in `--build-only` and `--production` modes.
+
+#### Generation Process
+
+```bash
+# Step 1: Generate specs
+go run ./cmd/server --generate-specs-dir ./core/server/api/specs
+```
+
+This command:
+1. Parses all `// API_SOURCE` files using Go AST
+2. Extracts route handlers, request/response types, parameters
+3. Generates versioned OpenAPI 3.0 JSON files
+4. Writes to `core/server/api/specs/`
+
+#### Validation Process
+
+```bash
+# Step 2: Validate specs
+go run ./cmd/server --validate-specs-dir ./core/server/api/specs
+```
+
+Validates:
+- JSON syntax
+- OpenAPI 3.0 schema compliance
+- Route path conflicts
+- Schema reference integrity
+
+#### Output Structure
+
+```
+core/server/api/specs/
+├── v1.json           # API version 1 spec
+├── v2.json           # API version 2 spec
+└── ...
+```
+
+<Warning>
+  In development mode, specs are generated at runtime via AST parsing. Pre-generation is only for production builds where disk files are embedded.
+</Warning>
+
+### 6. Server Execution
+
+**File:** `pkg/scripts/internal/server.go`
+
+#### Development Server
+
+```go
+// pkg/scripts/internal/server.go:11-22
+func RunServer(rootDir string) error {
+    cmd := exec.Command("go", "run", "./cmd/server", "--dev", "serve")
+    cmd.Dir = rootDir
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    
+    return cmd.Run()
+}
+```
+
+Flags:
+- `--dev`: Enables developer mode (auto-reload, verbose logging)
+- `serve`: Starts the HTTP server
+
+Default port: `8090` (configurable via `--http` flag)
+
+#### Environment Preparation
+
+```go
+// pkg/scripts/internal/server.go:119-137
+func PrepareServerEnvironment(rootDir string) error {
+    // Ensure pb_public exists (server expects this)
+    pbPublicDir := filepath.Join(rootDir, "pb_public")
+    if err := os.MkdirAll(pbPublicDir, 0755); err != nil {
+        return err
+    }
+
+    // Validate go.mod exists
+    goModPath := filepath.Join(rootDir, "go.mod")
+    if _, err := os.Stat(goModPath); os.IsNotExist(err) {
+        return fmt.Errorf("go.mod not found")
+    }
+
+    return nil
+}
+```
+
+### 7. Production Build
+
+**File:** `pkg/scripts/internal/production.go`
+
+The most complex pipeline mode.
+
+#### Build Sequence
+
+```go
+// pkg/scripts/internal/production.go:10-86
+func ProductionBuild(rootDir string, installDeps bool, distDir string) error {
+    outputDir := filepath.Join(rootDir, distDir)
+
+    // 1. Clean and create output directory
+    prepareOutputDirectory(outputDir)
+
+    // 2. Check system requirements
+    CheckSystemRequirements()
+
+    // 3. Install dependencies (if requested)
+    if installDeps {
+        InstallDependencies(rootDir, frontendDir)
+    }
+
+    // 4. Build frontend for production
+    BuildFrontendProduction(rootDir, installDeps)
+
+    // 5. Copy frontend to dist
+    CopyFrontendToDist(rootDir, outputDir)
+
+    // 6. Generate OpenAPI specs
+    GenerateOpenAPISpecs(rootDir)
+    ValidateOpenAPISpecs(rootDir)
+    CopyOpenAPISpecsToDist(rootDir, outputDir)
+
+    // 7. Build server binary
+    BuildServerBinary(rootDir, outputDir)
+
+    // 8. Generate metadata
+    GeneratePackageMetadata(rootDir, outputDir)
+
+    // 9. Run test suite
+    RunTestSuiteAndGenerateReport(rootDir, outputDir)
+
+    // 10. Create archive
+    CreateProjectArchive(rootDir, outputDir)
+
+    return nil
+}
+```
+
+#### Binary Compilation
+
+```go
+// pkg/scripts/internal/build.go:283-320
+func BuildServerBinary(rootDir, outputDir string) error {
+    binaryName := AppName
+    if runtime.GOOS == "windows" {
+        binaryName += ".exe"
+    }
+
+    outputPath := filepath.Join(outputDir, binaryName)
+
+    cmd := exec.Command("go", "build",
+        "-ldflags", "-s -w",  // Strip symbols & debug info
+        "-o", outputPath,
+        "./cmd/server")
+    cmd.Dir = rootDir
+
+    return cmd.Run()
+}
+```
+
+**Optimization Flags:**
+
+| Flag | Effect | Size Reduction |
+|------|--------|----------------|
+| `-s` | Strip symbol table | ~20-30% |
+| `-w` | Strip DWARF debug info | ~10-20% |
+| **Total** | **Combined effect** | **~30-50%** |
+
+<Info>
+  Trade-off: Smaller binaries, but stack traces and debuggers won't have symbol information.
+</Info>
+
+#### Directory Structure
+
+Production build creates:
+
+```
+dist/
+├── pb-cli                   # Optimized binary
+├── pb_public/               # Frontend assets
+│   ├── index.html
+│   ├── assets/
+│   │   ├── index-[hash].js
+│   │   └── index-[hash].css
+│   └── favicon.ico
+├── specs/                   # Pre-generated OpenAPI specs
+│   ├── v1.json
+│   └── v2.json
+├── test-reports/            # Test results
+│   ├── test-summary.txt
+│   ├── test-report.json
+│   ├── coverage.html
+│   ├── coverage-summary.txt
+│   └── coverage.out
+├── build-info.txt           # Build timestamp & environment
+├── package-metadata.json    # Go/Node/npm versions
+└── pb-ext-production.tar.gz # Complete archive
+```
+
+### 8. Test Execution
+
+**File:** `pkg/scripts/internal/test.go`
+
+#### Test Discovery
+
+```go
+// pkg/scripts/internal/test.go:37-99
+func getTestPackages() []string {
+    var testPackages []string
+
+    filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+        // Skip hidden directories
+        if strings.HasPrefix(filepath.Base(path), ".") && path != "." {
+            if info.IsDir() {
+                return filepath.SkipDir
+            }
+            return nil
+        }
+
+        // Skip vendor, node_modules, dist, pb_data, pb_public, frontend
+        if info.IsDir() {
+            name := filepath.Base(path)
+            if name == "vendor" || name == "node_modules" || 
+               name == "dist" || name == "pb_data" || 
+               name == "pb_public" || name == "frontend" {
+                return filepath.SkipDir
+            }
+        }
+
+        // Find *_test.go files
+        if strings.HasSuffix(path, "_test.go") && !info.IsDir() {
+            dir := filepath.Dir(path)
+            if !strings.HasPrefix(dir, "./") {
+                dir = "./" + dir
+            }
+            // Add unique package
+            testPackages = append(testPackages, dir)
+        }
+
+        return nil
+    })
+
+    sort.Strings(testPackages)
+    return testPackages
+}
+```
+
+#### Test Execution
+
+```go
+// pkg/scripts/internal/test.go:145-164
+func runTestPackage(packagePath string, current, total int) TestResult {
+    result := TestResult{
+        Package: packagePath,
+        Output:  []string{},
+        FailedTests: []string{},
+    }
+
+    start := time.Now()
+
+    // Run tests with verbose output
+    cmd := exec.Command("go", "test", "-v", packagePath)
+    output, err := cmd.CombinedOutput()
+
+    result.Duration = time.Since(start)
+    result.Success = err == nil
+
+    parseTestOutput(string(output), &result)
+
+    return result
+}
+```
+
+#### Coverage Generation
+
+```go
+// pkg/scripts/internal/test.go:483-547
+func GenerateHTMLCoverageReport(rootDir, reportsDir string, packages []string) error {
+    // Generate coverage data
+    args := append([]string{"test", "-coverprofile=coverage.out"}, packages...)
+    cmd := exec.Command("go", args...)
+    cmd.Dir = rootDir
+    cmd.Run()
+
+    // Generate HTML report
+    htmlReportPath := filepath.Join(reportsDir, "coverage.html")
+    cmd = exec.Command("go", "tool", "cover", 
+        "-html=coverage.out", "-o", htmlReportPath)
+    cmd.Dir = rootDir
+    cmd.Run()
+
+    // Generate function-level summary
+    summaryCmd := exec.Command("go", "tool", "cover", "-func=coverage.out")
+    summaryCmd.Dir = rootDir
+    summaryOutput, _ := summaryCmd.Output()
+    
+    summaryPath := filepath.Join(reportsDir, "coverage-summary.txt")
+    os.WriteFile(summaryPath, summaryOutput, 0644)
+
+    return nil
+}
+```
+
+#### Report Formats
+
+<Tabs>
+  <Tab title="test-summary.txt">
+    ```
+    pb-cli Test Suite Summary
+    ==============================
+
+    Execution Time: 2024-03-04 10:23:45
+    Duration: 258ms
+    Root Directory: /home/user/project
+
+    Go Version: go version go1.21.5 linux/amd64
+    Test Command: go run ./cmd/scripts/main.go --test-only
+
+    Status: PASSED
+    Reports Directory: /home/user/project/dist/test-reports
+
+    Test Output:
+    ----------------------------------------
+    === RUN   TestServerInit
+    --- PASS: TestServerInit (0.00s)
+    === RUN   TestJobManager
+    --- PASS: TestJobManager (0.05s)
+    ...
+    ```
+  </Tab>
+  
+  <Tab title="test-report.json">
+    ```json
+    {
+      "timestamp": "2024-03-04T10:23:45Z",
+      "rootDirectory": "/home/user/project",
+      "reportsDirectory": "/home/user/project/dist/test-reports",
+      "environment": {
+        "goVersion": "go version go1.21.5 linux/amd64",
+        "nodeVersion": "v20.11.0",
+        "npmVersion": "10.2.4"
+      },
+      "testSuite": {
+        "command": "go run ./cmd/scripts/main.go --test-only",
+        "status": "passed",
+        "error": "",
+        "duration": "258ms"
+      }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="coverage.html">
+    Interactive HTML report with:
+    - Line-by-line coverage visualization
+    - Color-coded coverage (green = covered, red = uncovered)
+    - Per-file coverage percentages
+    - Drilldown into package details
+  </Tab>
+  
+  <Tab title="coverage-summary.txt">
+    ```
+    github.com/magooney-loon/pb-ext/core/server/server.go:42:  New             100.0%
+    github.com/magooney-loon/pb-ext/core/server/server.go:67:  Start           87.5%
+    github.com/magooney-loon/pb-ext/core/logging/logger.go:23: SetupLogging    92.3%
+    ...
+    total:                                                     (statements)    84.2%
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Integration with CI/CD
+
+### GitHub Actions
+
+```yaml
+name: Build & Test
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install pb-cli
+        run: go install github.com/magooney-loon/pb-ext/cmd/pb-cli@latest
+      
+      - name: Run Tests
+        run: pb-cli --test-only
+      
+      - name: Upload Coverage
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-reports
+          path: dist/test-reports/
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v3
+      
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install pb-cli
+        run: go install github.com/magooney-loon/pb-ext/cmd/pb-cli@latest
+      
+      - name: Production Build
+        run: pb-cli --production
+      
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: production-build
+          path: dist/
+```
+
+### GitLab CI
+
+```yaml
+stages:
+  - test
+  - build
+
+variables:
+  GO_VERSION: "1.21"
+  NODE_VERSION: "20"
+
+test:
+  stage: test
+  image: golang:${GO_VERSION}
+  before_script:
+    - curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash -
+    - apt-get install -y nodejs
+    - go install github.com/magooney-loon/pb-ext/cmd/pb-cli@latest
+  script:
+    - pb-cli --test-only
+  artifacts:
+    paths:
+      - dist/test-reports/
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: dist/test-reports/coverage.xml
+
+build:
+  stage: build
+  image: golang:${GO_VERSION}
+  before_script:
+    - curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash -
+    - apt-get install -y nodejs
+    - go install github.com/magooney-loon/pb-ext/cmd/pb-cli@latest
+  script:
+    - pb-cli --production
+  artifacts:
+    paths:
+      - dist/
+```
+
+---
+
+## Programmatic Usage
+
+### Custom Build Script
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/magooney-loon/pb-ext/pkg/scripts/internal"
+)
+
+func main() {
+    rootDir := "."
+    frontendDir := "./frontend"
+
+    // Step 1: Check system requirements
+    if err := internal.CheckSystemRequirements(); err != nil {
+        fmt.Printf("System check failed: %v\n", err)
+        return
+    }
+
+    // Step 2: Install dependencies
+    if err := internal.InstallDependencies(rootDir, frontendDir); err != nil {
+        fmt.Printf("Dependency installation failed: %v\n", err)
+        return
+    }
+
+    // Step 3: Build frontend
+    if err := internal.BuildFrontend(rootDir, false); err != nil {
+        fmt.Printf("Frontend build failed: %v\n", err)
+        return
+    }
+
+    // Step 4: Generate OpenAPI specs
+    if err := internal.GenerateOpenAPISpecs(rootDir); err != nil {
+        fmt.Printf("Spec generation failed: %v\n", err)
+        return
+    }
+
+    // Step 5: Validate specs
+    if err := internal.ValidateOpenAPISpecs(rootDir); err != nil {
+        fmt.Printf("Spec validation failed: %v\n", err)
+        return
+    }
+
+    fmt.Println("Build completed successfully!")
+}
+```
+
+### Custom Production Pipeline
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/magooney-loon/pb-ext/pkg/scripts/internal"
+)
+
+func main() {
+    rootDir := "."
+    outputDir := "./release"
+
+    // Run production build
+    if err := internal.ProductionBuild(rootDir, true, outputDir); err != nil {
+        fmt.Printf("Production build failed: %v\n", err)
+        return
+    }
+
+    // Custom post-build steps
+    fmt.Println("Running custom post-build steps...")
+    // - Upload to S3
+    // - Notify Slack
+    // - Update deployment status
+}
+```
+
+---
+
+## Performance Optimization
+
+### Build Time Benchmarks
+
+| Operation | Cold Build | Warm Build | Cache Hit |
+|-----------|-----------|------------|----------|
+| Go Dependencies | ~15s | ~2s | ~0.5s |
+| npm Dependencies | ~45s | ~8s | ~1s (npm ci) |
+| Frontend Build | ~12s | ~12s | N/A |
+| OpenAPI Generation | ~3s | ~3s | N/A |
+| Server Compilation | ~8s | ~3s | ~1s |
+| **Total (dev)** | **~83s** | **~28s** | **~17.5s** |
+| **Total (prod)** | **~95s** | **~35s** | **~22s** |
+
+### Optimization Tips
+
+<AccordionGroup>
+  <Accordion title="Use --run-only for backend changes">
+    When modifying only Go code:
+    
+    ```bash
+    pb-cli --run-only
+    ```
+    
+    Saves ~12s by skipping frontend build.
+  </Accordion>
+  
+  <Accordion title="Leverage npm ci in CI/CD">
+    Always commit `package-lock.json` to enable:
+    
+    ```bash
+    npm ci  # Faster & more reliable than npm install
+    ```
+    
+    Saves ~7s in CI environments.
+  </Accordion>
+  
+  <Accordion title="Cache Go build artifacts">
+    In CI/CD, cache Go modules:
+    
+    ```yaml
+    - uses: actions/cache@v3
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+    ```
+    
+    Saves ~13s on cache hit.
+  </Accordion>
+  
+  <Accordion title="Parallelize independent builds">
+    If your project has multiple independent frontends:
+    
+    ```bash
+    # Terminal 1
+    cd frontend-admin && npm run build &
+    
+    # Terminal 2
+    cd frontend-public && npm run build &
+    
+    wait
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Debugging Build Failures
+
+### Enable Verbose Output
+
+All build operations output to stdout/stderr. Capture for debugging:
+
+```bash
+pb-cli --production 2>&1 | tee build.log
+```
+
+### Common Failure Points
+
+<AccordionGroup>
+  <Accordion title="npm run build fails">
+    **Symptoms:**
+    ```
+    [✗] Frontend build failed: npm run build failed: exit status 1
+    ```
+    
+    **Debug:**
+    ```bash
+    cd frontend
+    npm run build
+    # Review error output
+    ```
+    
+    **Common causes:**
+    - Missing dependencies (run `npm install`)
+    - TypeScript errors (check `tsc --noEmit`)
+    - Build script missing in `package.json`
+  </Accordion>
+  
+  <Accordion title="OpenAPI spec generation fails">
+    **Symptoms:**
+    ```
+    [✗] OpenAPI spec generation failed: exit status 1
+    ```
+    
+    **Debug:**
+    ```bash
+    go run ./cmd/server --generate-specs-dir ./core/server/api/specs
+    # Review AST parsing errors
+    ```
+    
+    **Common causes:**
+    - Syntax errors in handler files
+    - Missing `// API_SOURCE` directive
+    - Invalid route registration
+    
+    **Debug endpoint:**
+    ```bash
+    curl http://127.0.0.1:8090/api/docs/debug/ast
+    ```
+  </Accordion>
+  
+  <Accordion title="Server compilation fails">
+    **Symptoms:**
+    ```
+    [✗] Server compilation failed: exit status 1
+    ```
+    
+    **Debug:**
+    ```bash
+    go build -o /tmp/server ./cmd/server
+    # Review compiler errors
+    ```
+    
+    **Common causes:**
+    - Missing Go dependencies (run `go mod tidy`)
+    - Import cycle
+    - Type mismatch errors
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Command Reference" icon="terminal" href="/cli/commands">
+    Explore all available commands
+  </Card>
+  <Card title="pb-cli Overview" icon="info" href="/cli/pb-cli">
+    Return to pb-cli overview
+  </Card>
+  <Card title="Deployment" icon="server" href="/deployment/production">
+    Deploy your production build
+  </Card>
+  <Card title="CI/CD Integration" icon="github" href="/cli/build-pipeline">
+    Automate builds in CI/CD pipelines
+  </Card>
+</CardGroup>

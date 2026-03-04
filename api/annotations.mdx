@@ -1,0 +1,526 @@
+---
+title: Source File Annotations
+description: Complete reference for API documentation directives and best practices
+---
+
+## Overview
+
+pb-ext uses three source file directives to control API documentation generation:
+
+| Directive | Location | Purpose | Required |
+|-----------|----------|---------|----------|
+| `// API_SOURCE` | Top of `.go` file | Marks file for AST parsing | Yes (for handler files) |
+| `// API_DESC <text>` | Function doc comment | Sets OpenAPI description | No (auto-generated fallback) |
+| `// API_TAGS <csv>` | Function doc comment | Sets OpenAPI tags | No (auto-generated from path) |
+
+<Note>
+Directives are **comment lines** — they don't affect runtime behavior, only documentation generation.
+</Note>
+
+## `// API_SOURCE` — File Marker
+
+### Purpose
+
+Marks a Go file for AST parsing. Only files with this directive are analyzed for handler functions. Type definitions (structs) in imported packages are discovered automatically.
+
+### Placement
+
+Place at the **top of the file**, before the `package` declaration or imports:
+
+<CodeGroup>
+```go Correct Placement
+// API_SOURCE
+package main
+
+import (
+    "net/http"
+    "github.com/pocketbase/pocketbase/core"
+)
+
+func myHandler(c *core.RequestEvent) error {
+    return c.JSON(http.StatusOK, map[string]any{"status": "ok"})
+}
+```
+
+```go Also Correct (Before Package)
+// API_SOURCE
+
+package main
+
+import "github.com/pocketbase/pocketbase/core"
+```
+
+```go WRONG (Inside Code)
+package main
+
+// API_SOURCE  ❌ Too late, parser already skipped this file
+
+import "github.com/pocketbase/pocketbase/core"
+```
+</CodeGroup>
+
+### When to Use
+
+**Mark these files**:
+
+- Handler files (`handlers.go`, `routes.go`, `api.go`)
+- Files containing `func(c *core.RequestEvent) error` functions
+
+**Don't mark these files**:
+
+- Type definition files (`types.go`, `models.go`) — auto-discovered via imports
+- Utility files without handlers (`helpers.go`, `utils.go`)
+- Test files (`*_test.go`)
+
+<Accordion title="Example: handlers.go">
+```go
+// API_SOURCE
+package main
+
+import (
+    "encoding/json"
+    "net/http"
+    "github.com/pocketbase/pocketbase/core"
+)
+
+// API_DESC Create a new todo item
+// API_TAGS Todos
+func createTodoHandler(c *core.RequestEvent) error {
+    var req TodoRequest
+    if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+        return c.JSON(http.StatusBadRequest, map[string]any{"error": "Invalid JSON"})
+    }
+    // ...
+}
+
+// API_DESC Get all todos with optional filtering
+// API_TAGS Todos
+func getTodosHandler(c *core.RequestEvent) error {
+    // ...
+}
+```
+</Accordion>
+
+## `// API_DESC` — Handler Description
+
+### Purpose
+
+Sets the `description` field in the OpenAPI operation. This appears in Swagger UI and helps developers understand what the endpoint does.
+
+### Placement
+
+Place in the function's **doc comment** (the comment block directly above the function):
+
+```go
+// API_DESC Get all todos with optional filtering by completion status and priority
+func getTodosHandler(c *core.RequestEvent) error {
+    // ...
+}
+```
+
+### Fallback Behavior
+
+If omitted, the system auto-generates a description from the handler name:
+
+| Handler Name | Auto-Generated Description |
+|--------------|---------------------------|
+| `getTodosHandler` | Get Todos |
+| `createTodoHandler` | Create Todo |
+| `updateTodoHandler` | Update Todo |
+| `deleteTodoHandler` | Delete Todo |
+| `listUsersHandler` | List Users |
+
+<Note>
+Auto-generated descriptions are **basic**. Always add `// API_DESC` for better documentation.
+</Note>
+
+### Writing Good Descriptions
+
+<Steps>
+  <Step title="Start with a verb">
+    `Get`, `Create`, `Update`, `Delete`, `List`, `Search`, `Calculate`, etc.
+  </Step>
+  
+  <Step title="Explain the purpose">
+    What does this endpoint do? What data does it return?
+  </Step>
+  
+  <Step title="Mention key features">
+    Filtering, pagination, optional parameters, special behavior.
+  </Step>
+  
+  <Step title="Keep it concise">
+    1-2 sentences. Save detailed docs for external documentation.
+  </Step>
+</Steps>
+
+<CodeGroup>
+```go ❌ Bad Description
+// API_DESC Handler
+func getTodosHandler(c *core.RequestEvent) error {
+    // Too vague, doesn't explain what it does
+}
+```
+
+```go ✅ Better Description
+// API_DESC Get all todos
+func getTodosHandler(c *core.RequestEvent) error {
+    // Clear and concise
+}
+```
+
+```go ✅ Best Description
+// API_DESC Get all todos with optional filtering by completion status and priority
+func getTodosHandler(c *core.RequestEvent) error {
+    // Mentions key features (filtering, query params)
+}
+```
+</CodeGroup>
+
+## `// API_TAGS` — OpenAPI Tags
+
+### Purpose
+
+Groups related endpoints in Swagger UI. Tags appear as collapsible sections in the navigation sidebar.
+
+### Placement
+
+Place in the function's **doc comment**, same as `// API_DESC`:
+
+```go
+// API_DESC Create a new todo item
+// API_TAGS Todos, Management
+func createTodoHandler(c *core.RequestEvent) error {
+    // ...
+}
+```
+
+### Format
+
+Comma-separated list of tag names:
+
+```go
+// Single tag
+// API_TAGS Todos
+
+// Multiple tags
+// API_TAGS Todos, Management, Public
+```
+
+### Fallback Behavior
+
+If omitted, the system auto-generates a tag from the **path**:
+
+| Path | Auto-Generated Tag |
+|------|--------------------|
+| `/api/v1/todos` | `Todos` |
+| `/api/v1/users/{id}` | `Users` |
+| `/api/v1/admin/stats` | `Admin` |
+
+### Best Practices
+
+<Accordion title="Organize by Feature">
+```go
+// User management endpoints
+// API_TAGS Users
+func listUsersHandler(c *core.RequestEvent) error { /* ... */ }
+
+// API_TAGS Users
+func getUserHandler(c *core.RequestEvent) error { /* ... */ }
+
+// API_TAGS Users
+func createUserHandler(c *core.RequestEvent) error { /* ... */ }
+```
+
+This groups all user-related endpoints under a single "Users" tag in Swagger UI.
+</Accordion>
+
+<Accordion title="Use Multiple Tags for Cross-Cutting Features">
+```go
+// API_DESC Get current server time
+// API_TAGS Utility, Public
+func timeHandler(c *core.RequestEvent) error { /* ... */ }
+
+// API_DESC Health check endpoint
+// API_TAGS Utility, Monitoring
+func healthHandler(c *core.RequestEvent) error { /* ... */ }
+```
+
+Endpoints appear in multiple tag groups.
+</Accordion>
+
+<Accordion title="Consistency Matters">
+```go
+// ❌ Inconsistent capitalization
+// API_TAGS todos
+// API_TAGS Todos
+// API_TAGS TODO
+
+// ✅ Consistent
+// API_TAGS Todos
+// API_TAGS Todos
+// API_TAGS Todos
+```
+</Accordion>
+
+## Indirect Parameter Detection
+
+### What Requires Annotations?
+
+**Nothing**. Indirect parameter detection is fully automatic for helper functions that accept `*core.RequestEvent` as the first parameter.
+
+### How It Works
+
+The parser automatically extracts parameters from helper functions:
+
+<CodeGroup>
+```go Domain Helper (Specific Params)
+func parseTimeParams(e *core.RequestEvent) timeParams {
+    q := e.Request.URL.Query()
+    return timeParams{
+        Interval: q.Get("interval"),
+        From:     q.Get("from"),
+        To:       q.Get("to"),
+    }
+}
+
+func getDataHandler(e *core.RequestEvent) error {
+    params := parseTimeParams(e)
+    // No annotation needed — params auto-detected: interval, from, to
+}
+```
+
+```go Generic Helper (Dynamic Param Name)
+func parseIntParam(e *core.RequestEvent, name string, def int) int {
+    val := e.Request.URL.Query().Get(name)
+    if val == "" {
+        return def
+    }
+    i, _ := strconv.Atoi(val)
+    return i
+}
+
+func listItemsHandler(e *core.RequestEvent) error {
+    page := parseIntParam(e, "page", 1)    // Param name extracted: "page"
+    limit := parseIntParam(e, "limit", 10) // Param name extracted: "limit"
+    // No annotation needed — parser reads string literals
+}
+```
+</CodeGroup>
+
+### Requirements for Auto-Detection
+
+<Steps>
+  <Step title="Helper must accept *core.RequestEvent first">
+    ```go
+    func parseTimeParams(e *core.RequestEvent) timeParams { /* ... */ }
+    ```
+  </Step>
+  
+  <Step title="Helper must NOT return error">
+    ```go
+    // ✅ Detected as helper
+    func parseTimeParams(e *core.RequestEvent) timeParams { /* ... */ }
+    
+    // ❌ Detected as handler, not analyzed for params
+    func parseTimeParams(e *core.RequestEvent) error { /* ... */ }
+    ```
+  </Step>
+  
+  <Step title="Generic helpers need string literal param names">
+    ```go
+    // ✅ Param name extracted: "page"
+    page := parseIntParam(e, "page", 1)
+    
+    // ❌ Param name not extracted (variable, not literal)
+    paramName := "page"
+    page := parseIntParam(e, paramName, 1)
+    ```
+  </Step>
+</Steps>
+
+## When Annotations Are Needed vs Auto-Detected
+
+| Feature | Auto-Detected | Annotation Needed |
+|---------|---------------|-------------------|
+| **Request body** | ✅ `c.BindBody(&req)`, `json.Decode(&req)` | ❌ |
+| **Response schema** | ✅ `c.JSON(status, data)` | ❌ |
+| **Query parameters** | ✅ `c.Request.URL.Query().Get("name")` | ❌ |
+| **Header parameters** | ✅ `c.Request.Header.Get("name")` | ❌ |
+| **Path parameters** | ✅ `c.Request.PathValue("id")` | ❌ |
+| **Indirect params (helpers)** | ✅ Helper accepts `*core.RequestEvent` | ❌ |
+| **Handler description** | ⚠️ Fallback: handler name | ✅ `// API_DESC` |
+| **Endpoint tags** | ⚠️ Fallback: path-based | ✅ `// API_TAGS` |
+| **File inclusion** | ❌ Not parsed by default | ✅ `// API_SOURCE` |
+
+<Note>
+In most cases, **only `// API_SOURCE` is required**. The other directives (`// API_DESC`, `// API_TAGS`) are optional but recommended for better documentation.
+</Note>
+
+## Real Annotated Examples from handlers.go
+
+<Accordion title="createTodoHandler (Full Example)">
+```go
+// API_DESC Create a new todo item
+// API_TAGS Todos
+func createTodoHandler(c *core.RequestEvent) error {
+    // Auth check (auto-detected)
+    if c.Auth == nil {
+        return c.JSON(http.StatusUnauthorized, map[string]any{"error": "Authentication required"})
+    }
+
+    // Request body (auto-detected)
+    var req TodoRequest
+    if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+        return c.JSON(http.StatusBadRequest, map[string]any{"error": "Invalid JSON payload"})
+    }
+
+    // Response (auto-detected)
+    return c.JSON(http.StatusCreated, map[string]any{
+        "message": "Todo created successfully! ✅",
+        "todo": map[string]any{
+            "id":    record.Id,
+            "title": record.GetString("title"),
+        },
+    })
+}
+```
+
+**What's detected**:
+
+- **Description**: "Create a new todo item" (from `// API_DESC`)
+- **Tags**: ["Todos"] (from `// API_TAGS`)
+- **Auth**: Required (from `if c.Auth == nil` check)
+- **Request**: `TodoRequest` schema (from `json.Decode(&req)`)
+- **Response**: Inline object schema with `message` and `todo` properties
+</Accordion>
+
+<Accordion title="getTodosHandler (With Query Params)">
+```go
+// API_DESC Get all todos with optional filtering
+// API_TAGS Todos
+func getTodosHandler(c *core.RequestEvent) error {
+    // Query params (auto-detected)
+    completed := c.Request.URL.Query().Get("completed")
+    priority := c.Request.URL.Query().Get("priority")
+
+    // Response (auto-detected)
+    return c.JSON(http.StatusOK, map[string]any{
+        "todos": todos,
+        "count": len(todos),
+        "filters": map[string]any{
+            "completed": completed,
+            "priority":  priority,
+        },
+    })
+}
+```
+
+**What's detected**:
+
+- **Description**: "Get all todos with optional filtering"
+- **Tags**: ["Todos"]
+- **Query params**: `completed`, `priority` (both optional, type: string)
+- **Response**: Inline object with `todos`, `count`, `filters` properties
+</Accordion>
+
+<Accordion title="getTodoHandler (With Path Param)">
+```go
+// API_DESC Get a specific todo by ID
+// API_TAGS Todos
+func getTodoHandler(c *core.RequestEvent) error {
+    // Path param (auto-detected, required=true)
+    todoID := c.Request.PathValue("id")
+
+    // Response (auto-detected)
+    return c.JSON(http.StatusOK, map[string]any{
+        "message": "Todo retrieved successfully 📖",
+        "todo": map[string]any{
+            "id":    record.Id,
+            "title": record.GetString("title"),
+        },
+    })
+}
+```
+
+**What's detected**:
+
+- **Description**: "Get a specific todo by ID"
+- **Tags**: ["Todos"]
+- **Path param**: `id` (required=true, type: string)
+- **Response**: Inline object with `message` and `todo` properties
+</Accordion>
+
+## Best Practices Summary
+
+<Steps>
+  <Step title="Mark handler files with // API_SOURCE">
+    Place at the top of the file, before package declaration.
+  </Step>
+  
+  <Step title="Add // API_DESC to all handlers">
+    Don't rely on auto-generated descriptions — write clear, concise explanations.
+  </Step>
+  
+  <Step title="Use // API_TAGS for grouping">
+    Consistent tag names improve Swagger UI navigation.
+  </Step>
+  
+  <Step title="Extract parameter parsing into helpers">
+    Domain helpers make code cleaner and params are still auto-detected.
+  </Step>
+  
+  <Step title="Verify with the debug endpoint">
+    Check `/api/docs/debug/ast` to confirm all metadata is detected.
+  </Step>
+</Steps>
+
+## Debugging Missing Metadata
+
+If a parameter, schema, or description is missing from the OpenAPI spec:
+
+<Accordion title="1. Check the debug endpoint">
+```bash
+curl -H "Authorization: Bearer YOUR_SUPERUSER_TOKEN" \
+     http://localhost:8090/api/docs/debug/ast
+```
+
+Look for your handler in the `handlers` section. If it's missing:
+
+- File doesn't have `// API_SOURCE`
+- Function signature doesn't match `func(c *core.RequestEvent) error`
+</Accordion>
+
+<Accordion title="2. Verify helper function signatures">
+For indirect parameter detection:
+
+- Helper must accept `*core.RequestEvent` as **first parameter**
+- Helper must **NOT** return `error` (that makes it a handler)
+- Generic helpers need **string literal** param names at call site
+</Accordion>
+
+<Accordion title="3. Check directive placement">
+- `// API_SOURCE` must be at the **top of the file**
+- `// API_DESC` and `// API_TAGS` must be in the **function doc comment** (directly above the function)
+</Accordion>
+
+<Accordion title="4. Review AST parser logs">
+Look for parse errors in server logs:
+
+```
+api docs: failed to parse API_SOURCE file file=cmd/server/handlers.go err=...
+```
+
+Common causes: syntax errors, import issues, circular dependencies.
+</Accordion>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="OpenAPI System" icon="microscope" href="/api/openapi-system">
+    Deep dive into AST parsing internals
+  </Card>
+  <Card title="Route Registration" icon="route" href="/api/route-registration">
+    Learn manual and CRUD registration patterns
+  </Card>
+</CardGroup>

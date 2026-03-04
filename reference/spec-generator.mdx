@@ -1,0 +1,491 @@
+---
+title: SpecGenerator
+description: Build-time OpenAPI specification generation and validation
+---
+
+## Overview
+
+The `SpecGenerator` generates OpenAPI 3.0.3 specifications at build time by parsing Go source code and extracting endpoint metadata. It produces JSON spec files that can be embedded or served at runtime.
+
+## Type Definition
+
+```go
+type SpecGenerator struct {
+    versionConfigs VersionConfigProvider
+    routeRegistrar RouteRegistrar
+    vmInitializer  VersionManagerInitializer
+}
+
+type VersionConfigProvider func() map[string]*APIDocsConfig
+type RouteRegistrar func(vm *APIVersionManager) error
+type VersionManagerInitializer func() (*APIVersionManager, error)
+```
+
+<Note>
+The spec generator operates in **docs-only mode** during builds, meaning it doesn't start an HTTP server. It only parses code and generates documentation.
+</Note>
+
+## Constructor Functions
+
+### NewSpecGenerator
+
+```go
+func NewSpecGenerator(
+    configs VersionConfigProvider,
+    routes RouteRegistrar,
+) *SpecGenerator
+```
+
+Creates a spec generator with version configs and route registrar.
+
+<ParamField path="configs" type="VersionConfigProvider" required>
+  Function that returns version configurations
+</ParamField>
+
+<ParamField path="routes" type="RouteRegistrar" required>
+  Function that registers routes for all versions
+</ParamField>
+
+**Location:** `core/server/api/spec_generator.go:25`
+
+**Example:**
+```go
+sg := api.NewSpecGenerator(
+    func() map[string]*api.APIDocsConfig {
+        return map[string]*api.APIDocsConfig{
+            "v1": {Title: "API v1", Version: "v1"},
+        }
+    },
+    func(vm *api.APIVersionManager) error {
+        return vm.SetVersionRouteRegistrar("v1", registerV1Routes)
+    },
+)
+```
+
+### NewSpecGeneratorWithInitializer
+
+```go
+func NewSpecGeneratorWithInitializer(
+    initializer VersionManagerInitializer,
+) *SpecGenerator
+```
+
+Creates a spec generator with a custom version manager initializer.
+
+<ParamField path="initializer" type="VersionManagerInitializer" required>
+  Function that creates and configures an APIVersionManager
+</ParamField>
+
+**Location:** `core/server/api/spec_generator.go:32`
+
+**Example:**
+```go
+sg := api.NewSpecGeneratorWithInitializer(func() (*api.APIVersionManager, error) {
+    vm := api.NewAPIVersionManager()
+    // Custom setup logic
+    return vm, nil
+})
+```
+
+## Core Methods
+
+### Generate
+
+```go
+func (sg *SpecGenerator) Generate(outputDir string, onlyVersion string) error
+```
+
+Generates OpenAPI specs and writes them to disk.
+
+<ParamField path="outputDir" type="string" required>
+  Directory where spec files will be written
+</ParamField>
+
+<ParamField path="onlyVersion" type="string">
+  Optional: Generate spec for a single version only (empty string = all versions)
+</ParamField>
+
+**Returns:**
+- `error` - Error if generation or validation fails
+
+**Location:** `core/server/api/spec_generator.go:38`
+
+**Process:**
+1. Creates output directory if it doesn't exist
+2. Temporarily disables embedded spec loading (sets `PB_EXT_DISABLE_OPENAPI_SPECS=1`)
+3. Initializes version manager and registers routes
+4. Parses source code via AST
+5. Generates OpenAPI specs for each version
+6. Writes specs as `{version}.json` files
+7. Validates all generated specs
+8. Restores environment variables
+
+**Example:**
+```go
+sg := api.NewSpecGenerator(getVersionConfigs, registerRoutes)
+
+// Generate all versions
+if err := sg.Generate("./specs", ""); err != nil {
+    log.Fatal(err)
+}
+
+// Generate only v1
+if err := sg.Generate("./specs", "v1"); err != nil {
+    log.Fatal(err)
+}
+```
+
+### Validate
+
+```go
+func (sg *SpecGenerator) Validate(specsDir string) error
+```
+
+Validates that all required spec files exist and are properly formatted.
+
+<ParamField path="specsDir" type="string" required>
+  Directory containing spec files to validate
+</ParamField>
+
+**Location:** `core/server/api/spec_generator.go:131`
+
+**Checks:**
+- All configured versions have corresponding spec files
+- Spec files are valid JSON
+- Required OpenAPI fields are present (openapi, info, paths)
+- Version identifiers match file names
+
+**Example:**
+```go
+if err := sg.Validate("./specs"); err != nil {
+    log.Fatalf("Spec validation failed: %v", err)
+}
+```
+
+## Validation Functions
+
+### ValidateSpecs
+
+```go
+func ValidateSpecs(specsDir string, versions []string) error
+```
+
+Validates specs for a list of versions.
+
+<ParamField path="specsDir" type="string" required>
+  Directory containing spec files
+</ParamField>
+
+<ParamField path="versions" type="[]string" required>
+  List of version identifiers to validate
+</ParamField>
+
+**Location:** `core/server/api/spec_generator.go:156`
+
+### ValidateSpecFile
+
+```go
+func ValidateSpecFile(specPath string, expectedVersion string) error
+```
+
+Validates a single spec file.
+
+<ParamField path="specPath" type="string" required>
+  Path to spec file
+</ParamField>
+
+<ParamField path="expectedVersion" type="string">
+  Expected version identifier (validates filename matches)
+</ParamField>
+
+**Location:** `core/server/api/spec_generator.go:171`
+
+**Validation Checks:**
+- File exists and is readable
+- Valid JSON format
+- Contains required OpenAPI fields:
+  - `openapi` (version string)
+  - `info.title`
+  - `info.version`
+  - `paths` (object)
+- Filename matches expected version pattern
+
+## Build Integration Examples
+
+### CLI Tool
+
+```go
+// cmd/gen-specs/main.go
+package main
+
+import (
+    "flag"
+    "log"
+    "github.com/magooney-loon/pb-ext/core/server/api"
+)
+
+func main() {
+    outputDir := flag.String("output", "./specs", "Output directory")
+    version := flag.String("version", "", "Generate single version only")
+    validate := flag.Bool("validate", false, "Validate existing specs")
+    flag.Parse()
+    
+    sg := api.NewSpecGenerator(getVersionConfigs, registerAllRoutes)
+    
+    if *validate {
+        if err := sg.Validate(*outputDir); err != nil {
+            log.Fatalf("Validation failed: %v", err)
+        }
+        log.Println("✓ All specs valid")
+        return
+    }
+    
+    if err := sg.Generate(*outputDir, *version); err != nil {
+        log.Fatalf("Generation failed: %v", err)
+    }
+    log.Println("✓ Specs generated successfully")
+}
+```
+
+### Makefile Integration
+
+```makefile
+.PHONY: specs specs-validate specs-clean
+
+specs:
+	@echo "Generating OpenAPI specs..."
+	@go run cmd/gen-specs/main.go -output=./specs
+
+specs-validate:
+	@echo "Validating OpenAPI specs..."
+	@go run cmd/gen-specs/main.go -validate -output=./specs
+
+specs-clean:
+	@echo "Cleaning spec files..."
+	@rm -rf ./specs/*.json
+
+build: specs
+	@echo "Building with embedded specs..."
+	@go build -o dist/server cmd/server/main.go
+```
+
+### Go Generate
+
+```go
+// cmd/server/main.go
+//go:generate go run ../gen-specs/main.go -output=../../specs
+package main
+```
+
+### CI/CD Pipeline
+
+```yaml
+# .github/workflows/build.yml
+name: Build
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+      
+      - name: Generate OpenAPI specs
+        run: go run cmd/gen-specs/main.go -output=./specs
+      
+      - name: Validate specs
+        run: go run cmd/gen-specs/main.go -validate -output=./specs
+      
+      - name: Build binary
+        run: go build -o dist/server cmd/server/main.go
+      
+      - name: Upload specs artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: openapi-specs
+          path: specs/*.json
+```
+
+## Complete Example
+
+```go
+// cmd/gen-specs/main.go
+package main
+
+import (
+    "log"
+    "os"
+    "github.com/magooney-loon/pb-ext/core/server/api"
+)
+
+func main() {
+    // Option 1: Using config provider + route registrar
+    sg := api.NewSpecGenerator(getVersionConfigs, registerAllRoutes)
+    
+    // Option 2: Using custom initializer
+    // sg := api.NewSpecGeneratorWithInitializer(initializeVersionManager)
+    
+    outputDir := "./specs"
+    if len(os.Args) > 1 {
+        outputDir = os.Args[1]
+    }
+    
+    log.Println("Generating OpenAPI specs...")
+    if err := sg.Generate(outputDir, ""); err != nil {
+        log.Fatalf("Generation failed: %v", err)
+    }
+    
+    log.Println("Validating specs...")
+    if err := sg.Validate(outputDir); err != nil {
+        log.Fatalf("Validation failed: %v", err)
+    }
+    
+    log.Println("✓ Specs generated and validated successfully")
+}
+
+func getVersionConfigs() map[string]*api.APIDocsConfig {
+    return map[string]*api.APIDocsConfig{
+        "v1": {
+            Title:         "My API v1",
+            Version:       "v1",
+            BaseURL:       "https://api.example.com",
+            Status:        "stable",
+            PublicSwagger: true,
+        },
+        "v2": {
+            Title:         "My API v2",
+            Version:       "v2",
+            BaseURL:       "https://api.example.com",
+            Status:        "beta",
+            PublicSwagger: false,
+        },
+    }
+}
+
+func registerAllRoutes(vm *api.APIVersionManager) error {
+    // Register v1 routes
+    if err := vm.SetVersionRouteRegistrar("v1", registerV1Routes); err != nil {
+        return err
+    }
+    
+    // Register v2 routes
+    if err := vm.SetVersionRouteRegistrar("v2", registerV2Routes); err != nil {
+        return err
+    }
+    
+    // Register routes for documentation (no HTTP server)
+    return vm.RegisterAllVersionRoutesForDocs()
+}
+
+func registerV1Routes(router *api.VersionedAPIRouter) {
+    api := router.SetPrefix("/api/v1")
+    api.GET("/users", listUsersV1)
+    api.POST("/users", createUserV1)
+}
+
+func registerV2Routes(router *api.VersionedAPIRouter) {
+    api := router.SetPrefix("/api/v2")
+    api.GET("/users", listUsersV2)
+    api.POST("/users", createUserV2)
+}
+```
+
+## Environment Variables
+
+The spec generator temporarily modifies environment variables during generation:
+
+<ParamField path="PB_EXT_DISABLE_OPENAPI_SPECS" type="string">
+  Set to `"1"` during generation to force runtime spec generation (disables disk loading)
+</ParamField>
+
+<ParamField path="PB_EXT_OPENAPI_SPECS_DIR" type="string">
+  Unset during generation to prevent reading from disk
+</ParamField>
+
+<Note>
+Environment variables are automatically restored after generation completes, even if an error occurs.
+</Note>
+
+## Best Practices
+
+1. **Build-Time Generation**: Always generate specs during builds, not at runtime in production
+2. **Version Control**: Commit generated specs to version control for reproducibility
+3. **Validation**: Always run `Validate()` after `Generate()` in CI/CD
+4. **Single Responsibility**: Keep spec generation separate from server startup
+5. **Go Generate**: Use `//go:generate` directives for automatic regeneration
+6. **Output Directory**: Use `./specs` or `./openapi` as standard output directory
+7. **CI Integration**: Generate and validate specs in CI pipeline before builds
+
+## Common Patterns
+
+### Generate on File Change
+
+```bash
+# Using watchexec or similar
+watchexec -e go -w cmd -w core -- go run cmd/gen-specs/main.go
+```
+
+### Version-Specific Generation
+
+```go
+// Generate only production version
+if err := sg.Generate("./specs", "v1"); err != nil {
+    log.Fatal(err)
+}
+
+// Generate only beta version
+if err := sg.Generate("./specs", "v2"); err != nil {
+    log.Fatal(err)
+}
+```
+
+### Custom Output Format
+
+```go
+func generateWithPrettyJSON(sg *api.SpecGenerator, outputDir string) error {
+    if err := sg.Generate(outputDir, ""); err != nil {
+        return err
+    }
+    
+    // Re-format with indentation
+    files, _ := filepath.Glob(filepath.Join(outputDir, "*.json"))
+    for _, file := range files {
+        data, _ := os.ReadFile(file)
+        var spec map[string]interface{}
+        json.Unmarshal(data, &spec)
+        pretty, _ := json.MarshalIndent(spec, "", "  ")
+        os.WriteFile(file, pretty, 0644)
+    }
+    
+    return nil
+}
+```
+
+## Output Structure
+
+```
+specs/
+├── v1.json       # OpenAPI 3.0.3 spec for v1
+├── v2.json       # OpenAPI 3.0.3 spec for v2
+└── beta.json     # OpenAPI 3.0.3 spec for beta
+```
+
+Each spec file contains:
+- OpenAPI version (`"3.0.3"`)
+- API info (title, version, description)
+- Server URLs
+- All endpoint paths and operations
+- Component schemas
+- Security schemes
+
+## Related
+
+- [APIVersionManager](/reference/api-version-manager) - Multi-version API management
+- [OpenAPI Embedded Loader](/api/openapi-system) - Runtime spec loading
+- [Build System Guide](/cli/build-pipeline) - Complete build configuration

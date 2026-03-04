@@ -1,0 +1,411 @@
+---
+title: Route Registration Patterns
+description: Register API routes manually or use CRUD helpers for cleaner, more maintainable code
+---
+
+## Two Registration Approaches
+
+pb-ext provides two ways to register API routes:
+
+1. **Manual Registration** — explicit control over each route
+2. **CRUD Helper** — convention-based registration for resource routes
+
+Both approaches automatically register routes to:
+
+- PocketBase's router (for runtime handling)
+- The documentation registry (for OpenAPI spec generation)
+
+<Note>
+You can mix both approaches in the same application. Use manual registration for custom endpoints and CRUD helpers for standard resource operations.
+</Note>
+
+## Manual Route Registration
+
+### Basic Usage
+
+```go
+func registerV1Routes(router *api.VersionedAPIRouter) {
+    prefix := "/api/v1"
+    
+    router.GET(prefix+"/todos", getTodosHandler)
+    router.POST(prefix+"/todos", createTodoHandler)
+    router.GET(prefix+"/todos/{id}", getTodoHandler)
+    router.PATCH(prefix+"/todos/{id}", updateTodoHandler)
+    router.DELETE(prefix+"/todos/{id}", deleteTodoHandler)
+}
+```
+
+### HTTP Methods
+
+| Method | Function | Typical Use |
+|--------|----------|-------------|
+| `router.GET(path, handler)` | Read operations | List resources, get by ID |
+| `router.POST(path, handler)` | Create operations | New resource creation |
+| `router.PUT(path, handler)` | Full replacement | Replace entire resource |
+| `router.PATCH(path, handler)` | Partial update | Update specific fields |
+| `router.DELETE(path, handler)` | Delete operations | Remove resources |
+
+All methods return a `*VersionedRouteChain` that supports middleware binding.
+
+## Middleware Binding
+
+### `.Bind()` — Hook Handlers
+
+Bind PocketBase hook handlers or plain functions:
+
+<CodeGroup>
+```go Hook Handler (PocketBase Auth)
+router.POST("/api/v1/todos", createTodoHandler).Bind(apis.RequireAuth())
+```
+
+```go Plain Function (Auto-wrapped)
+router.GET("/api/v1/admin/stats", statsHandler).Bind(customAuthMiddleware)
+
+func customAuthMiddleware(e *core.RequestEvent) error {
+    if e.Auth == nil || !e.Auth.IsSuperuser() {
+        return e.JSON(http.StatusForbidden, map[string]any{"error": "Admin only"})
+    }
+    return e.Next()
+}
+```
+
+```go Multiple Middlewares
+router.POST("/api/v1/orders", createOrderHandler).Bind(
+    apis.RequireAuth(),
+    rateLimitMiddleware,
+    validationMiddleware,
+)
+```
+</CodeGroup>
+
+<Note>
+`.Bind()` accepts both `*hook.Handler[*core.RequestEvent]` and `func(*core.RequestEvent) error`. Plain functions are automatically wrapped in a hook handler.
+</Note>
+
+### `.BindFunc()` — Plain Functions Only
+
+Ergonomic alternative to `.Bind()` when you only have plain functions:
+
+```go
+func requestLoggerMW(e *core.RequestEvent) error {
+    start := time.Now()
+    err := e.Next()
+    log.Printf("[%s] %s — %s", e.Request.Method, e.Request.URL.Path, time.Since(start))
+    return err
+}
+
+func registerV2Routes(router *api.VersionedAPIRouter) {
+    router.GET("/api/v2/time", timeHandler).BindFunc(requestLoggerMW)
+}
+```
+
+**When to use `.BindFunc()`**:
+
+- You have simple middleware functions (not hook handlers)
+- You want cleaner syntax without manual wrapping
+- Middleware doesn't need hook priority or ID
+
+<Warning>
+`.BindFunc()` is **only** for `func(*core.RequestEvent) error`. Hook handlers must use `.Bind()`.
+</Warning>
+
+## SetPrefix Usage
+
+Reduce repetition by setting a path prefix:
+
+<CodeGroup>
+```go Without Prefix (Repetitive)
+func registerV1Routes(router *api.VersionedAPIRouter) {
+    router.GET("/api/v1/todos", getTodosHandler)
+    router.POST("/api/v1/todos", createTodoHandler)
+    router.GET("/api/v1/todos/{id}", getTodoHandler)
+    router.PATCH("/api/v1/todos/{id}", updateTodoHandler)
+    router.DELETE("/api/v1/todos/{id}", deleteTodoHandler)
+}
+```
+
+```go With Prefix (Cleaner)
+func registerV1Routes(router *api.VersionedAPIRouter) {
+    v1 := router.SetPrefix("/api/v1")
+    v1.GET("/todos", getTodosHandler)
+    v1.POST("/todos", createTodoHandler)
+    v1.GET("/todos/{id}", getTodoHandler)
+    v1.PATCH("/todos/{id}", updateTodoHandler)
+    v1.DELETE("/todos/{id}", deleteTodoHandler)
+}
+```
+</CodeGroup>
+
+`SetPrefix()` returns a `*PrefixedRouter` that automatically prepends the prefix to all paths.
+
+## CRUD Convenience Method
+
+### Basic Usage
+
+Register all standard resource routes in one call:
+
+```go
+func registerV1Routes(router *api.VersionedAPIRouter) {
+    v1 := router.SetPrefix("/api/v1")
+    
+    v1.CRUD("todos", api.CRUDHandlers{
+        List:   getTodosHandler,
+        Create: createTodoHandler,
+        Get:    getTodoHandler,
+        Update: updateTodoHandler,
+        Patch:  updateTodoHandler,
+        Delete: deleteTodoHandler,
+    }, apis.RequireAuth())
+}
+```
+
+This registers:
+
+| Method | Path | Handler | Middleware |
+|--------|------|---------|------------|
+| GET | `/todos` | `List` | None |
+| POST | `/todos` | `Create` | `RequireAuth()` |
+| GET | `/todos/{id}` | `Get` | None |
+| PUT | `/todos/{id}` | `Update` | `RequireAuth()` |
+| PATCH | `/todos/{id}` | `Patch` | `RequireAuth()` |
+| DELETE | `/todos/{id}` | `Delete` | `RequireAuth()` |
+
+<Note>
+Middleware (third argument) is applied **only** to mutating operations: `Create`, `Update`, `Patch`, and `Delete`. Read operations (`List`, `Get`) remain public.
+</Note>
+
+### CRUDHandlers Structure
+
+```go
+type CRUDHandlers struct {
+    List   func(*core.RequestEvent) error // GET /resource
+    Create func(*core.RequestEvent) error // POST /resource
+    Get    func(*core.RequestEvent) error // GET /resource/{id}
+    Update func(*core.RequestEvent) error // PUT /resource/{id}
+    Patch  func(*core.RequestEvent) error // PATCH /resource/{id}
+    Delete func(*core.RequestEvent) error // DELETE /resource/{id}
+}
+```
+
+All fields are **optional**. Omit handlers you don't need:
+
+```go
+v1.CRUD("todos", api.CRUDHandlers{
+    List:   getTodosHandler,
+    Get:    getTodoHandler,
+    // Create, Update, Patch, Delete omitted — routes not registered
+})
+```
+
+### Multiple Auth Middlewares
+
+```go
+v1.CRUD("orders", api.CRUDHandlers{
+    List:   listOrdersHandler,
+    Create: createOrderHandler,
+    Get:    getOrderHandler,
+    Delete: deleteOrderHandler,
+}, apis.RequireAuth(), rateLimitMiddleware)
+```
+
+Variadic arguments allow any number of middlewares.
+
+## Path Parameters with {id} Syntax
+
+Both manual and CRUD registration support path parameters:
+
+```go
+// Manual
+router.GET("/api/v1/users/{userID}/posts/{postID}", getPostHandler)
+
+// CRUD (automatically uses {id})
+v1.CRUD("posts", api.CRUDHandlers{
+    Get: getPostHandler, // Registered as GET /posts/{id}
+})
+```
+
+**Path parameter detection**:
+
+- AST parser extracts parameters from `c.Request.PathValue("id")` calls
+- Parameters are automatically marked as `required: true` in OpenAPI spec
+- Multiple path params are supported (e.g., `/users/{userID}/posts/{postID}`)
+
+<Accordion title="Example Handler with Path Parameter">
+```go
+// API_DESC Get a specific todo by ID
+// API_TAGS Todos
+func getTodoHandler(c *core.RequestEvent) error {
+    todoID := c.Request.PathValue("id")
+    
+    collection, err := c.App.FindCollectionByNameOrId("todos")
+    if err != nil {
+        return c.JSON(http.StatusInternalServerError, map[string]any{"error": "Collection not found"})
+    }
+    
+    record, err := c.App.FindRecordById(collection, todoID)
+    if err != nil {
+        return c.JSON(http.StatusNotFound, map[string]any{"error": "Todo not found"})
+    }
+    
+    return c.JSON(http.StatusOK, map[string]any{"todo": record})
+}
+```
+
+OpenAPI spec will include:
+```json
+{
+  "parameters": [
+    {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {"type": "string"}
+    }
+  ]
+}
+```
+</Accordion>
+
+## Full Example from routes.go
+
+Here's the complete registration code from the demo app:
+
+<CodeGroup>
+```go registerV1Routes (Manual)
+func registerV1Routes(router *api.VersionedAPIRouter) {
+    // Option 1: Manual route registration (explicit control)
+    prefix := "/api/v1"
+    router.GET(prefix+"/todos", getTodosHandler)
+    router.POST(prefix+"/todos", createTodoHandler).Bind(apis.RequireAuth())
+    router.GET(prefix+"/todos/{id}", getTodoHandler)
+    router.PATCH(prefix+"/todos/{id}", updateTodoHandler).Bind(apis.RequireAuth())
+    router.DELETE(prefix+"/todos/{id}", deleteTodoHandler).Bind(apis.RequireAuth())
+}
+```
+
+```go registerV1Routes (CRUD Alternative)
+func registerV1Routes(router *api.VersionedAPIRouter) {
+    // Option 2: CRUD convenience method (less boilerplate)
+    v1 := router.SetPrefix("/api/v1")
+    v1.CRUD("todos", api.CRUDHandlers{
+        List:   getTodosHandler,
+        Create: createTodoHandler,
+        Get:    getTodoHandler,
+        Patch:  updateTodoHandler,
+        Delete: deleteTodoHandler,
+    }, apis.RequireAuth()) // Auth applied to Create, Update, Patch, Delete
+}
+```
+
+```go registerV2Routes (SetPrefix + BindFunc)
+func registerV2Routes(router *api.VersionedAPIRouter) {
+    v2 := router.SetPrefix("/api/v2")
+    v2.GET("/time", timeHandler).BindFunc(requestLoggerMW)
+}
+
+func requestLoggerMW(e *core.RequestEvent) error {
+    start := time.Now()
+    err := e.Next()
+    log.Printf("[v2] %s %s — %s", e.Request.Method, e.Request.URL.Path, time.Since(start))
+    return err
+}
+```
+</CodeGroup>
+
+## Comparison: Manual vs CRUD
+
+| Aspect | Manual Registration | CRUD Helper |
+|--------|---------------------|-------------|
+| **Verbosity** | More code, explicit paths | Less code, convention-based |
+| **Flexibility** | Full control over middleware per route | Middleware applies to all mutating ops |
+| **Best for** | Custom endpoints, non-standard paths | Standard resource CRUD operations |
+| **Path params** | Manual `{id}` in path string | Automatic `{id}` for Get/Update/Patch/Delete |
+| **Middleware** | Per-route via `.Bind()` | Shared across Create/Update/Patch/Delete |
+
+<Note>
+Most applications use **both**:
+
+- CRUD helper for standard resources (`/todos`, `/users`, `/posts`)
+- Manual registration for custom endpoints (`/auth/login`, `/stats/summary`, `/webhooks/stripe`)
+</Note>
+
+## Advanced Patterns
+
+### Nested Resources
+
+```go
+v1 := router.SetPrefix("/api/v1")
+
+// Parent resource
+v1.CRUD("users", api.CRUDHandlers{
+    List: listUsersHandler,
+    Get:  getUserHandler,
+})
+
+// Nested resource (manual registration required)
+v1.GET("/users/{userID}/posts", listUserPostsHandler)
+v1.POST("/users/{userID}/posts", createUserPostHandler).Bind(apis.RequireAuth())
+```
+
+### Conditional Middleware
+
+```go
+func registerRoutes(router *api.VersionedAPIRouter) {
+    v1 := router.SetPrefix("/api/v1")
+    
+    // Public list, authenticated creation
+    v1.GET("/posts", listPostsHandler)
+    v1.POST("/posts", createPostHandler).Bind(apis.RequireAuth())
+    
+    // Admin-only routes
+    v1.DELETE("/posts/{id}", deletePostHandler).Bind(
+        apis.RequireAuth(),
+        requireAdminMiddleware,
+    )
+}
+```
+
+### Custom Resource Names
+
+```go
+// CRUD uses the resource name as the path segment
+v1.CRUD("blog-posts", api.CRUDHandlers{
+    List: listPostsHandler, // GET /blog-posts
+    Get:  getPostHandler,   // GET /blog-posts/{id}
+})
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Use SetPrefix for version isolation">
+    Always prefix routes with `/api/v1`, `/api/v2`, etc.
+  </Step>
+  
+  <Step title="Choose the right pattern">
+    CRUD for standard resources, manual for custom logic.
+  </Step>
+  
+  <Step title="Apply auth to mutating operations">
+    Protect `POST`, `PUT`, `PATCH`, `DELETE` with middleware.
+  </Step>
+  
+  <Step title="Extract common middleware">
+    Define reusable middleware functions for auth, logging, rate limiting.
+  </Step>
+  
+  <Step title="Document handlers with directives">
+    Add `// API_DESC` and `// API_TAGS` for better OpenAPI docs.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Annotations Reference" icon="tag" href="/api/annotations">
+    Complete guide to source file directives
+  </Card>
+  <Card title="OpenAPI System" icon="microscope" href="/api/openapi-system">
+    Deep dive into AST parsing and schema detection
+  </Card>
+</CardGroup>

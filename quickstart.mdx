@@ -1,80 +1,540 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get pb-ext running in 5 minutes with a complete working example
 ---
 
-## Get started in three steps
+This guide will walk you through creating a minimal pb-ext application from scratch. By the end, you'll have a running server with monitoring, logging, and API documentation.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+<Steps>
+  <Step title="Install Go">
+    pb-ext requires **Go 1.25.7 or higher**.
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    # Check your Go version
+    go version
+    ```
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    If you need to install or upgrade Go, visit [golang.org/dl](https://go.dev/dl/).
+  </Step>
 
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+  <Step title="Verify Installation">
+    Ensure Go is properly installed and in your PATH:
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```bash
+    # This should display the Go version
+    go version
+    # Expected output: go version go1.25.7 linux/amd64
+    ```
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Create Your First pb-ext Project
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
+  <Step title="Create Project Directory">
+    ```bash
+    mkdir my-pb-project
+    cd my-pb-project
+    ```
+  </Step>
 
-### Step 3: Go live
+  <Step title="Initialize Go Module">
+    ```bash
+    go mod init my-pb-project
+    ```
+    
+    This creates a `go.mod` file that tracks your dependencies.
+  </Step>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+  <Step title="Create Main Application File">
+    Create the directory structure and main file:
+    
+    ```bash
+    mkdir -p cmd/server
+    ```
+    
+    Create `cmd/server/main.go` with the following content:
+    
+    ```go cmd/server/main.go
+    package main
+    
+    import (
+        "flag"
+        "log"
+    
+        app "github.com/magooney-loon/pb-ext/core"
+        "github.com/pocketbase/pocketbase/core"
+    )
+    
+    func main() {
+        devMode := flag.Bool("dev", false, "Run in developer mode")
+        flag.Parse()
+    
+        initApp(*devMode)
+    }
+    
+    func initApp(devMode bool) {
+        var opts []app.Option
+    
+        if devMode {
+            opts = append(opts, app.InDeveloperMode())
+        } else {
+            opts = append(opts, app.InNormalMode())
+        }
+    
+        srv := app.New(opts...)
+    
+        app.SetupLogging(srv)
+    
+        registerCollections(srv.App())
+        registerRoutes(srv.App())
+        registerJobs(srv.App())
+    
+        srv.App().OnServe().BindFunc(func(e *core.ServeEvent) error {
+            app.SetupRecovery(srv.App(), e)
+            return e.Next()
+        })
+    
+        if err := srv.Start(); err != nil {
+            srv.App().Logger().Error("Fatal application error",
+                "error", err,
+                "uptime", srv.Stats().StartTime,
+                "total_requests", srv.Stats().TotalRequests.Load(),
+            )
+            log.Fatal(err)
+        }
+    }
+    
+    func registerCollections(app core.App) {
+        // We'll add collections later
+    }
+    
+    func registerRoutes(app core.App) {
+        // We'll add routes later
+    }
+    
+    func registerJobs(app core.App) {
+        // We'll add jobs later
+    }
+    ```
+    
+    <Note>
+    This is the **exact structure** from `cmd/server/main.go` in the pb-ext repository. The file location matters: pb-cli expects your entry point at `cmd/server/main.go`.
+    </Note>
+  </Step>
 
-## Next steps
+  <Step title="Download Dependencies">
+    ```bash
+    go mod tidy
+    ```
+    
+    This downloads pb-ext and all its dependencies (PocketBase, gopsutil, etc.).
+  </Step>
 
-Now that you have your docs running, explore these key features:
+  <Step title="Install pb-cli Toolchain">
+    ```bash
+    go install github.com/magooney-loon/pb-ext/cmd/pb-cli@latest
+    ```
+    
+    The `pb-cli` toolchain automates building, running, and deploying pb-ext applications.
+    
+    <Warning>
+    Make sure your `$GOPATH/bin` or `$HOME/go/bin` is in your PATH. If `pb-cli` is not found, add this to your shell profile:
+    
+    ```bash
+    export PATH="$PATH:$(go env GOPATH)/bin"
+    ```
+    </Warning>
+  </Step>
+
+  <Step title="Run Your Server">
+    ```bash
+    pb-cli --run-only
+    ```
+    
+    You should see output similar to:
+    
+    ```
+    > Server:     http://127.0.0.1:8090
+    ├─ REST API: http://127.0.0.1:8090/api/
+    └─ Admin UI: http://127.0.0.1:8090/_
+    └─ pb-ext Dashboard:  http://127.0.0.1:8090/_/_
+    ```
+    
+    <Note>
+    The `--run-only` flag skips frontend building (useful when you don't have a frontend yet).
+    </Note>
+  </Step>
+</Steps>
+
+## Access Your Application
 
 <CardGroup cols={2}>
+  <Card title="PocketBase Admin Panel" icon="user-shield">
+    Open [http://127.0.0.1:8090/_](http://127.0.0.1:8090/_)
+    
+    Create your first admin account to access the PocketBase admin UI.
+  </Card>
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="pb-ext Dashboard" icon="chart-line">
+    Open [http://127.0.0.1:8090/_/_](http://127.0.0.1:8090/_/_)
+    
+    View system metrics, analytics, and cron job logs (requires admin auth).
+  </Card>
 </CardGroup>
 
+## Add Your First API Endpoint
+
+Let's add a simple API endpoint to see how pb-ext auto-generates documentation.
+
+<Steps>
+  <Step title="Create Routes File">
+    Create `cmd/server/routes.go`:
+    
+    ```go cmd/server/routes.go
+    package main
+    
+    // API_SOURCE
+    
+    import (
+        "time"
+        
+        "github.com/magooney-loon/pb-ext/core/server/api"
+        "github.com/pocketbase/pocketbase/core"
+    )
+    
+    func registerRoutes(app core.App) {
+        versionManager := initVersionedSystem()
+        
+        app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+            if err := versionManager.RegisterAllVersionRoutes(e); err != nil {
+                return err
+            }
+            return e.Next()
+        })
+        
+        versionManager.RegisterWithServer(app)
+    }
+    
+    func initVersionedSystem() *api.APIVersionManager {
+        v1Config := &api.APIDocsConfig{
+            Title:       "My API",
+            Description: "My first pb-ext API",
+            Version:     "1.0.0",
+            Status:      "stable",
+            BaseURL:     "http://127.0.0.1:8090/",
+            Enabled:     true,
+            PublicSwagger: true,
+        }
+        
+        return api.InitializeVersionedSystemWithRoutes(map[string]*api.VersionSetup{
+            "v1": {
+                Config: v1Config,
+                Routes: registerV1Routes,
+            },
+        }, "v1")
+    }
+    
+    // API_DESC Returns the current server time
+    // API_TAGS utilities
+    func timeHandler(e *core.RequestEvent) error {
+        return e.JSON(200, map[string]string{
+            "time": time.Now().Format(time.RFC3339),
+        })
+    }
+    
+    func registerV1Routes(router *api.VersionedAPIRouter) {
+        router.GET("/api/v1/time", timeHandler)
+    }
+    ```
+    
+    <Note>
+    The `// API_SOURCE` comment at the top tells pb-ext to parse this file for OpenAPI metadata. The `API_DESC` and `API_TAGS` directives add documentation to your endpoint.
+    </Note>
+  </Step>
+
+  <Step title="Restart the Server">
+    Stop the server (Ctrl+C) and restart it:
+    
+    ```bash
+    pb-cli --run-only
+    ```
+  </Step>
+
+  <Step title="Test Your Endpoint">
+    ```bash
+    curl http://127.0.0.1:8090/api/v1/time
+    ```
+    
+    Expected response:
+    ```json
+    {
+      "time": "2026-03-04T10:30:45Z"
+    }
+    ```
+  </Step>
+
+  <Step title="View Auto-Generated Docs">
+    Open [http://127.0.0.1:8090/api/docs/v1/swagger](http://127.0.0.1:8090/api/docs/v1/swagger)
+    
+    You'll see a Swagger UI with your `/api/v1/time` endpoint fully documented, including the response schema automatically inferred from your code.
+  </Step>
+</Steps>
+
+## Add a Cron Job
+
+Let's schedule a background task that runs every minute.
+
+<Steps>
+  <Step title="Create Jobs File">
+    Create `cmd/server/jobs.go`:
+    
+    ```go cmd/server/jobs.go
+    package main
+    
+    import (
+        "fmt"
+        "time"
+        
+        "github.com/magooney-loon/pb-ext/core/jobs"
+        "github.com/pocketbase/pocketbase/core"
+    )
+    
+    func registerJobs(app core.App) {
+        app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+            if err := helloJob(app); err != nil {
+                app.Logger().Error("Failed to register hello job", "error", err)
+                return err
+            }
+            
+            app.Logger().Info("Cron jobs registered successfully")
+            return e.Next()
+        })
+    }
+    
+    func helloJob(app core.App) error {
+        jm := jobs.GetManager()
+        if jm == nil {
+            return fmt.Errorf("job manager not initialized")
+        }
+        
+        return jm.RegisterJob(
+            "helloWorld",
+            "Hello World Job",
+            "A demonstration job that runs every minute",
+            "*/1 * * * *", // Every minute
+            func(el *jobs.ExecutionLogger) {
+                el.Start("Hello World Job")
+                el.Info("Current time: %s", time.Now().Format("2006-01-02 15:04:05"))
+                el.Progress("Processing task...")
+                
+                // Simulate work
+                time.Sleep(100 * time.Millisecond)
+                
+                el.Success("Task completed successfully")
+                el.Complete("Job finished")
+            },
+        )
+    }
+    ```
+  </Step>
+
+  <Step title="Restart and View Job Logs">
+    Restart the server:
+    
+    ```bash
+    pb-cli --run-only
+    ```
+    
+    After waiting 1 minute, check the dashboard at [http://127.0.0.1:8090/_/_](http://127.0.0.1:8090/_/_) to see your job execution logs.
+  </Step>
+</Steps>
+
+## Add a Database Collection
+
+Let's create a simple "todos" collection.
+
+<Steps>
+  <Step title="Create Collections File">
+    Create `cmd/server/collections.go`:
+    
+    ```go cmd/server/collections.go
+    package main
+    
+    import (
+        "github.com/pocketbase/pocketbase/core"
+    )
+    
+    func registerCollections(app core.App) {
+        app.OnServe().BindFunc(func(e *core.ServeEvent) error {
+            if err := todoCollection(e.App); err != nil {
+                app.Logger().Error("Failed to create todo collection", "error", err)
+            }
+            return e.Next()
+        })
+    }
+    
+    func todoCollection(app core.App) error {
+        existingCollection, _ := app.FindCollectionByNameOrId("todos")
+        if existingCollection != nil {
+            return nil // Already exists
+        }
+        
+        collection := core.NewBaseCollection("todos")
+        
+        collection.Fields.Add(&core.TextField{
+            Name:     "title",
+            Required: true,
+            Max:      200,
+        })
+        
+        collection.Fields.Add(&core.BoolField{
+            Name: "completed",
+        })
+        
+        collection.Fields.Add(&core.AutodateField{
+            Name:     "created",
+            OnCreate: true,
+        })
+        
+        // Public access for demo
+        collection.ViewRule = nil
+        collection.CreateRule = nil
+        collection.UpdateRule = nil
+        collection.DeleteRule = nil
+        
+        if err := app.Save(collection); err != nil {
+            return err
+        }
+        
+        app.Logger().Info("Created todos collection")
+        return nil
+    }
+    ```
+  </Step>
+
+  <Step title="Restart Server">
+    ```bash
+    pb-cli --run-only
+    ```
+    
+    The "todos" collection will be automatically created on startup.
+  </Step>
+
+  <Step title="Test CRUD Operations">
+    Create a todo:
+    ```bash
+    curl -X POST http://127.0.0.1:8090/api/collections/todos/records \
+      -H "Content-Type: application/json" \
+      -d '{"title": "Learn pb-ext", "completed": false}'
+    ```
+    
+    List todos:
+    ```bash
+    curl http://127.0.0.1:8090/api/collections/todos/records
+    ```
+  </Step>
+</Steps>
+
+## Project Structure
+
+Your project should now look like this:
+
+```
+my-pb-project/
+├── cmd/
+│   └── server/
+│       ├── main.go          # Entry point
+│       ├── routes.go        # API routes
+│       ├── collections.go   # Database schemas
+│       └── jobs.go          # Cron jobs
+├── pb_data/                 # Created automatically (database)
+├── pb_public/               # Static files (optional)
+├── go.mod                   # Go dependencies
+└── go.sum                   # Dependency checksums
+```
+
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+You can restructure your project however you like, but `cmd/server/main.go` is the conventional entry point expected by `pb-cli`.
 </Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Learn API Documentation" icon="book" href="/api/overview">
+    Master the AST-based OpenAPI system with versioning and parameter inference
+  </Card>
+  
+  <Card title="Explore Cron Jobs" icon="clock" href="/features/cron-jobs">
+    Deep dive into job scheduling, logging, and the management API
+  </Card>
+  
+  <Card title="Setup Frontend" icon="palette" href="/deployment/frontend">
+    Build a SvelteKit frontend with the pb-cli toolchain
+  </Card>
+  
+  <Card title="Deploy to Production" icon="rocket" href="/deployment/production">
+    Use pb-deployer for automated VPS deployment
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="pb-cli: command not found">
+    Make sure `$GOPATH/bin` is in your PATH:
+    
+    ```bash
+    export PATH="$PATH:$(go env GOPATH)/bin"
+    ```
+    
+    Add this to your `.bashrc` or `.zshrc` to make it permanent.
+  </Accordion>
+
+  <Accordion title="Port 8090 already in use">
+    Change the port by passing flags to the server:
+    
+    ```bash
+    pb-cli --run-only -- serve --http=127.0.0.1:9090
+    ```
+    
+    Or set it programmatically in `main.go`:
+    ```go
+    os.Args = []string{"app", "serve", "--http=127.0.0.1:9090"}
+    ```
+  </Accordion>
+
+  <Accordion title="Module not found errors">
+    Run `go mod tidy` to ensure all dependencies are downloaded:
+    
+    ```bash
+    go mod tidy
+    ```
+  </Accordion>
+
+  <Accordion title="Dashboard shows no data">
+    The dashboard requires admin authentication. Make sure you:
+    1. Created an admin account at `/_/`
+    2. Logged in before accessing `/_/_`
+  </Accordion>
+</AccordionGroup>
+
+## Example Project
+
+Want to see a complete working example? The pb-ext repository includes a full example server in `cmd/server/` with:
+
+- Multiple API versions (v1, v2)
+- CRUD routes with OpenAPI docs
+- Cron jobs with logging
+- Collection definitions
+- Request middleware
+
+Clone the repository to explore:
+
+```bash
+git clone https://github.com/magooney-loon/pb-ext.git
+cd pb-ext
+pb-cli --run-only
+```

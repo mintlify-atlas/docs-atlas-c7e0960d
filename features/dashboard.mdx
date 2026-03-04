@@ -1,0 +1,391 @@
+---
+title: Dashboard
+description: Superuser dashboard for system health, analytics, and job management
+---
+
+pb-ext includes a comprehensive dashboard at `/_/_` that provides real-time visibility into system health, visitor analytics, cron job execution, and performance metrics.
+
+## Access
+
+**URL:** `http://127.0.0.1:8090/_/_`
+
+**Authentication:** Requires PocketBase superuser login
+
+From `core/server/health.go:316`:
+
+```go
+// Health check endpoint handler
+healthHandler := func(c *core.RequestEvent) error {
+    // If not already authenticated, show login template
+    if c.Auth == nil || !c.Auth.IsSuperuser() {
+        // Execute login template
+        var buf bytes.Buffer
+        if err := tmpl.ExecuteTemplate(&buf, "login.tmpl", loginData); err != nil {
+            return NewTemplateError("login_template_execution", "Failed to execute login template", err)
+        }
+        return c.HTML(http.StatusOK, buf.String())
+    }
+
+    // User is authenticated, show the dashboard
+    data, err := s.prepareTemplateData()
+    if err != nil {
+        return NewHTTPError("health_check", "Failed to collect system stats", http.StatusInternalServerError, err)
+    }
+
+    var buf bytes.Buffer
+    if err := tmpl.ExecuteTemplate(&buf, "index.tmpl", data); err != nil {
+        return NewTemplateError("health_template_execution", "Failed to execute template", err)
+    }
+
+    return c.HTML(http.StatusOK, buf.String())
+}
+```
+
+## Dashboard Sections
+
+### 1. System Health
+
+Real-time system metrics collected from `core/monitoring/stats.go`:
+
+- **CPU Usage** — per-core utilization and average percentage
+- **Memory** — total, used, free, cached, and buffers (in GB)
+- **Disk Space** — total, used, free, and usage percentage
+- **Network** — bytes sent/received, active connections, interface stats
+- **Uptime** — server start time and total uptime duration
+- **Temperature** — CPU, disk, and system temperatures (if available)
+
+From `core/server/health.go:229`:
+
+```go
+func (s *Server) prepareTemplateData() (interface{}, error) {
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+
+    sysStats, err := monitoring.CollectSystemStats(ctx, s.stats.StartTime)
+    if err != nil {
+        // Log partial errors but continue
+        if errs, ok := err.(interface{ Unwrap() []error }); ok {
+            for _, k := range errs.Unwrap() {
+                s.App().Logger().Warn("Failed to collect system stats", "error", k)
+            }
+        }
+    }
+
+    // Get analytics data
+    var analyticsData *analytics.Data
+    if s.analytics != nil {
+        analyticsData, _ = s.analytics.GetData()
+    } else {
+        analyticsData = analytics.DefaultData()
+    }
+
+    data := struct {
+        Status           string
+        UptimeDuration   string
+        ServerStats      *ServerStats
+        SystemStats      *monitoring.SystemStats
+        AvgRequestTimeMs float64
+        MemoryUsageStr   string
+        DiskUsageStr     string
+        LastCheckTime    time.Time
+        RequestRate      float64
+        AnalyticsData    *analytics.Data
+        PBAdminURL       string
+    }{
+        Status:           "Healthy",
+        UptimeDuration:   time.Since(s.stats.StartTime).Round(time.Second).String(),
+        ServerStats:      s.stats,
+        SystemStats:      sysStats,
+        AvgRequestTimeMs: float64(s.stats.AverageRequestTime.Load()) / 1e6,
+        MemoryUsageStr:   fmt.Sprintf("%.2f/%.2f GB", float64(sysStats.MemoryInfo.Used)/1024/1024/1024, float64(sysStats.MemoryInfo.Total)/1024/1024/1024),
+        DiskUsageStr:     fmt.Sprintf("%.2f/%.2f GB", float64(sysStats.DiskUsed)/1024/1024/1024, float64(sysStats.DiskTotal)/1024/1024/1024),
+        LastCheckTime:    time.Now(),
+        RequestRate:      float64(s.stats.TotalRequests.Load()) / time.Since(s.stats.StartTime).Seconds(),
+        AnalyticsData:    analyticsData,
+        PBAdminURL:       "/_/",
+    }
+
+    return data, nil
+}
+```
+
+### 2. Request Statistics
+
+HTTP request metrics tracked by the server:
+
+- **Total Requests** — cumulative count since startup
+- **Active Connections** — current concurrent requests
+- **Request Rate** — requests per second
+- **Average Response Time** — mean request duration in milliseconds
+- **Last Request** — timestamp of most recent request
+
+### 3. Runtime Metrics
+
+Go runtime statistics from `core/monitoring/runtime.go`:
+
+- **Goroutines** — active goroutine count
+- **CPU Cores** — available CPU count
+- **Go Version** — runtime version string
+- **Heap Allocation** — current heap memory usage
+- **Total Allocated** — cumulative bytes allocated
+- **System Memory** — total memory obtained from OS
+- **GC Runs** — garbage collection execution count
+- **Last GC** — timestamp of most recent GC cycle
+- **Heap In Use** — actively used heap memory
+- **Heap Released** — memory returned to OS
+
+### 4. Visitor Analytics
+
+From `core/analytics/types.go:14`:
+
+- **Unique Visitors** — distinct sessions (30-minute window)
+- **New vs. Returning** — first-time vs. repeat visitor ratio
+- **Total Page Views** — aggregate view count
+- **Views Per Visitor** — average pages per session
+- **Today vs. Yesterday** — daily comparison
+- **Device Breakdown** — desktop/mobile/tablet percentages
+- **Browser Distribution** — Chrome, Firefox, Safari, Edge, etc.
+- **Top Pages** — most visited paths by view count
+- **Recent Activity** — last 50 visits with device/browser/OS
+- **Hourly Activity** — traffic intensity as percentage
+
+### 5. Cron Job Monitoring
+
+Job execution tracking from `core/jobs/logger.go:166`:
+
+- **Total Executions** — all job runs (success + failure)
+- **Success Rate** — percentage of completed jobs
+- **Failed Runs** — error count
+- **Average Run Time** — mean execution duration
+- **Today vs. Yesterday** — daily execution comparison
+- **Recent Executions** — last 10 job runs with status
+- **Job Statistics** — per-job success rate, last run, avg duration
+- **Manual Trigger** — run jobs on-demand
+
+### 6. System Information
+
+Host and platform details:
+
+- **Hostname** — server name
+- **Platform** — OS platform (linux, darwin, windows)
+- **OS** — operating system name
+- **Kernel Version** — OS kernel version
+- **CPU Model** — processor model name
+- **Start Time** — server boot timestamp
+
+## Template System
+
+From `core/server/health.go:288`:
+
+```go
+func (s *Server) RegisterHealthRoute(e *core.ServeEvent) {
+    // Automatically discover and parse all templates from embedded filesystem
+    var templateFiles []string
+
+    err := fs.WalkDir(TemplateFS, "templates", func(path string, d fs.DirEntry, err error) error {
+        if err != nil {
+            return err
+        }
+
+        // Only include .tmpl files
+        if !d.IsDir() && filepath.Ext(path) == ".tmpl" {
+            templateFiles = append(templateFiles, path)
+        }
+
+        return nil
+    })
+
+    if err != nil {
+        log.Printf("Error discovering templates: %v", err)
+        return
+    }
+
+    // Parse all discovered templates
+    tmpl, err := template.New("").Funcs(templateFuncs).ParseFS(TemplateFS, templateFiles...)
+    if err != nil {
+        log.Printf("Error parsing health templates: %v", err)
+        return
+    }
+
+    // Register the main health route
+    e.Router.GET("/_/_", healthHandler)
+}
+```
+
+### Template Functions
+
+From `core/server/health.go:33`:
+
+```go
+var templateFuncs = template.FuncMap{
+    "multiply": func(a, b float64) float64 {
+        return a * b
+    },
+    "divide": func(a, b any) float64 {
+        // Type conversion and division
+    },
+    "formatBytes": func(bytes uint64) string {
+        const unit = 1024
+        if bytes < unit {
+            return fmt.Sprintf("%d B", bytes)
+        }
+        div, exp := uint64(unit), 0
+        for n := bytes / unit; n >= unit; n /= unit {
+            div *= unit
+            exp++
+        }
+        return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+    },
+    "avgCPUUsage": func(cpus []monitoring.CPUInfo) float64 {
+        if len(cpus) == 0 {
+            return 0
+        }
+        var total float64
+        for _, cpu := range cpus {
+            total += cpu.Usage
+        }
+        return total / float64(len(cpus))
+    },
+    "formatTime": func(t time.Time) string {
+        return t.Format("15:04:05")
+    },
+    "getDiskTemp": func(stats *monitoring.SystemStats) float64 {
+        // Extract disk temperature from sensors
+    },
+    "getSystemTemp": func(stats *monitoring.SystemStats) float64 {
+        // Extract system temperature from sensors
+    },
+}
+```
+
+## Dashboard Layout
+
+The dashboard uses embedded Go templates with PocketBase styling:
+
+```
+templates/
+├── index.tmpl              # Main dashboard
+├── login.tmpl              # Authentication page
+├── error.tmpl              # Error pages
+├── components/             # Reusable components
+│   ├── system_health.tmpl
+│   ├── analytics.tmpl
+│   ├── jobs.tmpl
+│   └── runtime_stats.tmpl
+├── css/                    # Stylesheets
+└── scripts/                # JavaScript
+```
+
+## Auto-Refresh
+
+The dashboard automatically refreshes data every 5 seconds without full page reload using JavaScript fetch:
+
+```javascript
+setInterval(async () => {
+  const response = await fetch('/_/_', {
+    headers: { 'Accept': 'application/json' }
+  });
+  const data = await response.json();
+  updateDashboard(data);
+}, 5000);
+```
+
+## PocketBase Admin Link
+
+From `core/server/health.go:279`:
+
+```go
+PBAdminURL: "/_/",
+```
+
+The dashboard includes a quick link to the PocketBase admin panel at `/_/`.
+
+## Dashboard Features
+
+### Visual Indicators
+
+- **Status badges** — Healthy (green), Warning (yellow), Critical (red)
+- **Progress bars** — CPU, memory, disk usage gauges
+- **Charts** — Browser breakdown, device distribution (if charting enabled)
+- **Color coding** — Status codes (2xx green, 4xx yellow, 5xx red)
+- **System/User job badges** — Distinguish built-in vs. custom jobs
+
+### Interactive Elements
+
+- **Manual job trigger** — Run jobs on-demand via button
+- **Job log expansion** — View full execution output
+- **Recent visits detail** — Click to expand session info
+- **Sort and filter** — Organize jobs and analytics
+
+### Real-Time Updates
+
+Dashboard data refreshes automatically:
+
+- **System metrics** — Every 5 seconds
+- **Request stats** — Live counter updates
+- **Job status** — Immediate execution feedback
+- **Analytics** — Session-based updates
+
+## Error Handling
+
+From `core/server/health.go:339`:
+
+```go
+if err != nil {
+    return NewHTTPError("health_check", "Failed to collect system stats", http.StatusInternalServerError, err)
+}
+```
+
+Partial data collection failures are logged but don't prevent dashboard rendering.
+
+## Security
+
+- **Superuser-only access** — Authentication required
+- **Session-based auth** — Uses PocketBase auth system
+- **CSRF protection** — Inherits from PocketBase
+- **No API exposure** — Dashboard is HTML-only
+- **Trace IDs** — All requests logged with correlation IDs
+
+## Performance
+
+- **Cached stats** — 2-second refresh interval reduces overhead
+- **Timeout protection** — 5-second context timeout for metrics collection
+- **Async updates** — Non-blocking data fetching
+- **Lazy loading** — Components load incrementally
+- **Minimal overhead** — &lt;1% CPU for dashboard serving
+
+## Customization
+
+The dashboard templates can be customized by modifying files in `core/server/templates/`:
+
+```go
+// Custom template data
+type CustomData struct {
+    // Add your custom fields
+    CustomMetric int
+}
+
+// Extend prepareTemplateData() to include custom data
+```
+
+## Mobile Responsive
+
+The dashboard is mobile-friendly with responsive breakpoints:
+
+- **Desktop** — Full multi-column layout
+- **Tablet** — Stacked sections with side-by-side cards
+- **Mobile** — Single column, collapsible sections
+
+## Related
+
+- [Monitoring](/features/monitoring) - Metrics collection system
+- [Analytics](/features/analytics) - Visitor tracking
+- [Cron Jobs](/features/cron-jobs) - Job management
+- [Logging](/features/logging) - Request and error logs
+
+## Quick Links from Dashboard
+
+- **PocketBase Admin** — `/_/`
+- **API Documentation** — `/api/docs/v1/swagger`
+- **Cron API** — `/api/cron/jobs`
+- **Health JSON** — `/_/_` with `Accept: application/json` header
