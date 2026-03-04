@@ -1,0 +1,160 @@
+{
+  "projectType": "framework",
+  "projectName": "pb-ext",
+  "projectDescription": "Enhanced PocketBase framework with auto-generated OpenAPI docs, cron job tracking, system monitoring, structured logging, and visitor analytics.",
+  "theme": "aspen",
+  "primaryColor": "#74d7ed",
+  "lightColor": "#74d7ed",
+  "darkColor": "#38484e",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "core/architecture",
+              "core/server-lifecycle",
+              "core/configuration"
+            ]
+          },
+          {
+            "group": "API Documentation",
+            "pages": [
+              "api/overview",
+              "api/openapi-system",
+              "api/versioned-routing",
+              "api/route-registration",
+              "api/annotations"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/cron-jobs",
+              "features/analytics",
+              "features/monitoring",
+              "features/logging",
+              "features/dashboard"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/ast-parsing",
+              "advanced/spec-generation",
+              "advanced/reserved-collections",
+              "advanced/reserved-routes",
+              "advanced/middleware"
+            ]
+          },
+          {
+            "group": "CLI Tools",
+            "pages": [
+              "cli/pb-cli",
+              "cli/commands",
+              "cli/build-pipeline"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/production",
+              "deployment/frontend",
+              "deployment/environment"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Server",
+            "pages": [
+              "reference/server",
+              "reference/options"
+            ]
+          },
+          {
+            "group": "API System",
+            "pages": [
+              "reference/api-version-manager",
+              "reference/versioned-router",
+              "reference/spec-generator"
+            ]
+          },
+          {
+            "group": "Jobs",
+            "pages": [
+              "reference/job-manager",
+              "reference/execution-logger"
+            ]
+          },
+          {
+            "group": "Logging",
+            "pages": [
+              "reference/logging",
+              "reference/recovery"
+            ]
+          },
+          {
+            "group": "Analytics",
+            "pages": [
+              "reference/analytics-collector",
+              "reference/analytics-storage"
+            ]
+          },
+          {
+            "group": "Monitoring",
+            "pages": [
+              "reference/system-metrics"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Auto-generated OpenAPI documentation via Go AST parsing",
+    "Cron job tracking and management with execution logs",
+    "Real-time system monitoring (CPU, memory, disk, network)",
+    "Structured logging with request tracing and error tracking",
+    "GDPR-compliant visitor analytics",
+    "Versioned API routing system",
+    "Built-in admin dashboard at /_/_",
+    "PocketBase integration with auth and styling"
+  ],
+  "publicApiSurface": [
+    "core.New(opts ...Option) *Server",
+    "core.InDeveloperMode() Option",
+    "core.InNormalMode() Option",
+    "core.WithConfig(config *pocketbase.Config) Option",
+    "core.WithPocketbase(pb *pocketbase.PocketBase) Option",
+    "core.SetupLogging(srv *Server)",
+    "core.SetupRecovery(app core.App, e *core.ServeEvent)",
+    "api.APIVersionManager",
+    "api.VersionedAPIRouter",
+    "api.InitializeVersionedSystemWithRoutes(versions map[string]*VersionSetup, defaultVersion string)",
+    "api.NewSpecGeneratorWithInitializer(initializer func() (*APIVersionManager, error))",
+    "jobs.GetManager() *JobManager",
+    "jobs.RegisterJob(id, name, description, cronExpr string, handler func(*ExecutionLogger))",
+    "jobs.ExecutionLogger.Start(message string)",
+    "jobs.ExecutionLogger.Info(format string, args ...any)",
+    "jobs.ExecutionLogger.Progress(format string, args ...any)",
+    "jobs.ExecutionLogger.Success(format string, args ...any)",
+    "jobs.ExecutionLogger.Error(format string, args ...any)",
+    "jobs.ExecutionLogger.Statistics(stats map[string]interface{})",
+    "jobs.ExecutionLogger.Complete(message string)",
+    "jobs.ExecutionLogger.Fail(err error)"
+  ]
+}
